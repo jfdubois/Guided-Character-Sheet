@@ -1,0 +1,10 @@
+{
+  "id": "guided-character-sheet",
+  "name": "Guided Character Sheet",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.7",
+  "description": "A guided D&D 5e character sheet.",
+  "author": "JF Dubois",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

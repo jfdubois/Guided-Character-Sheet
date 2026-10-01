@@ -1,0 +1,39 @@
+node_modules/
+main.js
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# Local environment, credentials, and signing material.
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Editor and operating-system state.
+.DS_Store
+.idea/
+.vscode/
+
+# Foundry checkouts, downloaded pack sources, and generated source indexes are
+# local development/runtime data. They must never be committed.
+/external/
+**/foundryvtt/
+**/sources/packs/_source/
+**/source-sync-manifest.json
+**/source-uuid-lookup.json
+
+# Internal plans, agent instructions, and working reports.
+/AGENTS.md
+/docs/
+/.superpowers/
+/.worktrees/
+
+# Local Obsidian development vault, generated characters, and plugin data.
+/TEST-Vault/
