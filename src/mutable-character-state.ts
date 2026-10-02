@@ -10,8 +10,8 @@ export interface CharacterSpellUse { key: string; current: number; maximum: numb
 export type MutableSpellOwnership = 'cantrips-known' | 'known-spells' | 'spellbook';
 export interface MutableSpellOverlayEntry { reference: FoundrySourceReference; ownership: MutableSpellOwnership; }
 export interface MutableSpellOverlay { added: MutableSpellOverlayEntry[]; removed: FoundrySourceReference[]; }
-/** Temporary HP is optional only for character files saved before it was introduced. */
-export interface MutableHitPoints { current: number; maximum: number; temporary?: number; }
+/** Temporary HP and the effective-maximum override are optional for older character files. */
+export interface MutableHitPoints { current: number; maximum: number; temporary?: number; maximumOverride?: number; }
 export interface MutableCharacterState {
   preparedSpells: FoundrySourceReference[];
   inventory: CharacterInventory;
@@ -42,17 +42,26 @@ export function adjustMutableResourceCurrent(current: number, maximum: number, d
   return Math.max(0, Math.min(maximum, current + delta));
 }
 
-export type HitPointAdjustment = 'heal' | 'damage' | 'temp';
+export type HitPointAdjustment = 'heal' | 'damage' | 'temp' | 'maximum' | 'clear-maximum';
 
-export function adjustHitPoints(state: MutableHitPoints, operation: HitPointAdjustment, amount: number): Required<MutableHitPoints> {
+export function effectiveHitPointMaximum(state: MutableHitPoints): number { return state.maximumOverride ?? state.maximum; }
+
+export function adjustHitPoints(state: MutableHitPoints, operation: HitPointAdjustment, amount: number): MutableHitPoints & { temporary: number } {
   if (!isNonNegativeInteger(amount) || !isValidHitPoints(state)) throw new Error('Invalid hit-point adjustment.');
   const temporary = state.temporary ?? 0;
-  if (operation === 'heal') return { ...state, temporary, current: Math.min(state.maximum, state.current + amount) };
+  if (operation === 'heal') return { ...state, temporary, current: Math.min(effectiveHitPointMaximum(state), state.current + amount) };
   if (operation === 'damage') {
     const temporaryDamage = Math.min(temporary, amount);
     return { ...state, temporary: temporary - temporaryDamage, current: Math.max(0, state.current - (amount - temporaryDamage)) };
   }
   if (operation === 'temp') return { ...state, temporary: amount };
+  if (operation === 'maximum') {
+    return { ...state, maximumOverride: amount, temporary, current: Math.min(state.current, amount) };
+  }
+  if (operation === 'clear-maximum') {
+    const { maximumOverride: _maximumOverride, ...base } = state;
+    return { ...base, temporary, current: Math.min(state.current, state.maximum) };
+  }
   throw new Error('Invalid hit-point adjustment.');
 }
 
@@ -102,7 +111,7 @@ export function createFinalizedMutableCharacterState(inventory: CharacterInvento
 
 export function isMutableCharacterState(value: unknown): value is MutableCharacterState {
   if (!isRecord(value) || !Array.isArray(value.preparedSpells) || !value.preparedSpells.every((entry) => isFoundrySourceReference(entry) && entry.type === 'spell') || !isCharacterInventory(value.inventory) || !Array.isArray(value.equipmentStatus) || !value.equipmentStatus.every(isEquipmentStatus) || !Array.isArray(value.resources) || !value.resources.every(isCharacterResource)) return false;
-  if (value.hitPoints !== undefined && (!isRecord(value.hitPoints) || !isNonNegativeInteger(value.hitPoints.current) || !isNonNegativeInteger(value.hitPoints.maximum) || value.hitPoints.maximum < 1 || value.hitPoints.current > value.hitPoints.maximum || value.hitPoints.temporary !== undefined && !isNonNegativeInteger(value.hitPoints.temporary))) return false;
+  if (value.hitPoints !== undefined && (!isRecord(value.hitPoints) || !isNonNegativeInteger(value.hitPoints.current) || !isNonNegativeInteger(value.hitPoints.maximum) || value.hitPoints.maximum < 1 || value.hitPoints.maximumOverride !== undefined && !isNonNegativeInteger(value.hitPoints.maximumOverride) || value.hitPoints.current > (typeof value.hitPoints.maximumOverride === 'number' ? value.hitPoints.maximumOverride : value.hitPoints.maximum) || value.hitPoints.temporary !== undefined && !isNonNegativeInteger(value.hitPoints.temporary))) return false;
   if (value.inspiration !== undefined && typeof value.inspiration !== 'boolean') return false;
   if (value.spellSlots !== undefined && (!Array.isArray(value.spellSlots) || !value.spellSlots.every(isCharacterSpellSlot) || new Set(value.spellSlots.map((slot) => slot.level)).size !== value.spellSlots.length)) return false;
   if (value.spellUses !== undefined && (!Array.isArray(value.spellUses) || !value.spellUses.every(isCharacterSpellUse) || new Set(value.spellUses.map((use) => use.key)).size !== value.spellUses.length)) return false;
@@ -127,5 +136,5 @@ function isCharacterResource(value: unknown): value is CharacterResource { retur
 function isCharacterSpellSlot(value: unknown): value is CharacterSpellSlot { return isRecord(value) && isNonNegativeInteger(value.level) && value.level >= 1 && isNonNegativeInteger(value.current) && isNonNegativeInteger(value.maximum) && value.current <= value.maximum; }
 function isCharacterSpellUse(value: unknown): value is CharacterSpellUse { return isRecord(value) && typeof value.key === 'string' && value.key.length > 0 && isNonNegativeInteger(value.current) && isNonNegativeInteger(value.maximum) && value.current <= value.maximum && (value.reset === 'none' || value.reset === 'short-rest' || value.reset === 'long-rest'); }
 function isNonNegativeInteger(value: unknown): value is number { return typeof value === 'number' && Number.isInteger(value) && value >= 0; }
-function isValidHitPoints(value: MutableHitPoints): boolean { return isNonNegativeInteger(value.current) && isNonNegativeInteger(value.maximum) && value.maximum >= 1 && value.current <= value.maximum && (value.temporary === undefined || isNonNegativeInteger(value.temporary)); }
+function isValidHitPoints(value: MutableHitPoints): boolean { return isNonNegativeInteger(value.current) && isNonNegativeInteger(value.maximum) && value.maximum >= 1 && (value.maximumOverride === undefined || isNonNegativeInteger(value.maximumOverride)) && value.current <= effectiveHitPointMaximum(value) && (value.temporary === undefined || isNonNegativeInteger(value.temporary)); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }

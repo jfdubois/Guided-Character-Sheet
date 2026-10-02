@@ -9,6 +9,7 @@ import { projectBackgroundSheet, type BackgroundSheetProjection } from './backgr
 import type { FoundrySourceReference, FoundrySpellSummary } from './foundry-source-catalog';
 import { projectActionSheet, type ActionSheetProjection } from './action-sheet-model';
 import { isRecord } from './foundry-utils';
+import { effectiveHitPointMaximum } from './mutable-character-state';
 
 export type SheetValue<T> =
   | { kind: 'available'; value: T }
@@ -167,7 +168,7 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
       speed: movementValue(sources.species),
       initiative: abilityModifier(results, 'dex', 'Initiative requires complete ability-score sources.'),
       armorClass,
-      hitPoints: document.mutable?.hitPoints === undefined ? missing('Hit points are not available from character handover.') : available({ ...document.mutable.hitPoints, temporary: document.mutable.hitPoints.temporary ?? 0 }),
+      hitPoints: document.mutable?.hitPoints === undefined ? missing('Hit points are not available from character handover.') : available({ current: document.mutable.hitPoints.current, maximum: effectiveHitPointMaximum(document.mutable.hitPoints), temporary: document.mutable.hitPoints.temporary ?? 0 }),
       inspiration: document.mutable?.inspiration === undefined ? missing('Inspiration is not available from character handover.') : available(document.mutable.inspiration),
     },
     abilities: ABILITIES.map((ability) => ({

@@ -28,6 +28,14 @@ describe('mutable character state', () => {
     expect(() => adjustHitPoints(hp, 'damage', -1)).toThrow('Invalid hit-point adjustment');
     expect(() => adjustHitPoints(hp, 'heal', 1.5)).toThrow('Invalid hit-point adjustment');
   });
+  it('applies and clears an effective maximum override without losing the calculated maximum', () => {
+    const overridden = adjustHitPoints({ current: 8, maximum: 10, temporary: 2 }, 'maximum', 15);
+    expect(overridden).toEqual({ current: 8, maximum: 10, maximumOverride: 15, temporary: 2 });
+    expect(adjustHitPoints(overridden, 'heal', 99)).toEqual({ current: 15, maximum: 10, maximumOverride: 15, temporary: 2 });
+    expect(adjustHitPoints({ ...overridden, current: 12 }, 'clear-maximum', 0)).toEqual({ current: 10, maximum: 10, temporary: 2 });
+    expect(adjustHitPoints({ ...overridden, current: 12 }, 'maximum', 6)).toEqual({ current: 6, maximum: 10, maximumOverride: 6, temporary: 2 });
+    expect(adjustHitPoints(overridden, 'maximum', 0)).toEqual({ current: 0, maximum: 10, maximumOverride: 0, temporary: 2 });
+  });
   it('clamps independent usage adjustments to the resource bounds', () => {
     expect(adjustMutableResourceCurrent(2, 2, -1)).toBe(1);
     expect(adjustMutableResourceCurrent(0, 2, -1)).toBe(0);
@@ -38,6 +46,10 @@ describe('mutable character state', () => {
   it('normalizes legacy persisted hit points without temporary HP', () => {
     const legacy = { ...createCharacterDocument('Ayla', snapshot), mutable: { ...state, hitPoints: { current: 7, maximum: 10 } } };
     expect(parseCharacterDocument(legacy).mutable?.hitPoints).toEqual({ current: 7, maximum: 10, temporary: 0 });
+  });
+  it('round-trips a manual effective maximum without replacing the calculated maximum', () => {
+    const overridden = { ...createCharacterDocument('Ayla', snapshot), mutable: { ...state, hitPoints: { current: 12, maximum: 10, maximumOverride: 15, temporary: 2 } } };
+    expect(parseCharacterDocument(JSON.parse(JSON.stringify(overridden))).mutable?.hitPoints).toEqual({ current: 12, maximum: 10, maximumOverride: 15, temporary: 2 });
   });
   it('accepts valid partial mutable state and sanitizes references', () => {
     const parsed = parseCharacterDocument({ ...createCharacterDocument('Ayla', snapshot), mutable: { ...state, preparedSpells: [{ ...spell, raw: { system: {} } }] } });
@@ -142,6 +154,8 @@ describe('mutable character state', () => {
     ['whitespace source references', { ...state, preparedSpells: [{ ...spell, pack: ' ', id: ' ', name: ' ' }] }],
     ['zero maximum hit points', { ...state, hitPoints: { current: 0, maximum: 0, temporary: 0 } }],
     ['current hit points above maximum', { ...state, hitPoints: { current: 11, maximum: 10, temporary: 0 } }],
+    ['fractional maximum override', { ...state, hitPoints: { current: 0, maximum: 10, maximumOverride: 1.5, temporary: 0 } }],
+    ['current hit points above maximum override', { ...state, hitPoints: { current: 11, maximum: 10, maximumOverride: 8, temporary: 0 } }],
     ['duplicate spell slots', { ...state, spellSlots: [{ level: 1, current: 1, maximum: 1 }, { level: 1, current: 1, maximum: 1 }] }],
     ['negative spell use', { ...state, spellUses: [{ ...state.spellUses![0], current: -1 }] }],
     ['duplicate spell uses', { ...state, spellUses: [state.spellUses![0]!, state.spellUses![0]!] }],

@@ -82,8 +82,8 @@ function renderHitPointFact(root: HTMLElement, value: SheetValue<{ current: numb
   fact.createSpan({ text: 'Hit points', cls: 'guided-character-sheet__sheet-fact-label' });
   if (value.kind === 'missing' || onAdjust === undefined) { renderSheetValue(fact, 'Hit points', value, ({ current, maximum }) => `${current}/${maximum}`); return; }
   const button = fact.createEl('button', { cls: 'guided-character-sheet__hit-points-control', attr: { type: 'button', 'aria-label': `Hit points: ${value.value.current} of ${value.value.maximum}; temporary ${value.value.temporary}` } });
-  button.createSpan({ text: `${value.value.current}/${value.value.maximum}` });
-  if (value.value.temporary > 0) button.createSpan({ text: ` (+${value.value.temporary} temporary)`, cls: 'guided-character-sheet__hit-points-temporary' });
+  button.createSpan({ text: `${value.value.current}/${value.value.maximum}`, cls: 'guided-character-sheet__hit-points-primary' });
+  if (value.value.temporary > 0) button.createSpan({ text: `+${value.value.temporary} temp`, cls: 'guided-character-sheet__hit-points-temporary' });
   button.addEventListener('click', onAdjust);
 }
 

@@ -1901,7 +1901,7 @@ describe('character view render state', () => {
     expect(document.mutable.preparedSpells).toEqual([]);
   });
 
-  it('persists manual hit-point adjustments without changing maximum HP', () => {
+  it('persists manual hit-point adjustments and an optional effective maximum override', () => {
     let document: CharacterDocument = createSheetDocument();
     document.mutable = {
       preparedSpells: [],
@@ -1911,13 +1911,18 @@ describe('character view render state', () => {
       hitPoints: { current: 7, maximum: 10, temporary: 3 },
     };
     const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => { document = update(document); } };
-    const apply = (CharacterView.prototype as unknown as { applyHitPointAdjustment(this: typeof context, operation: 'heal' | 'damage' | 'temp', amount: number): void }).applyHitPointAdjustment;
+    const apply = (CharacterView.prototype as unknown as { applyHitPointAdjustment(this: typeof context, operation: 'heal' | 'damage' | 'temp' | 'maximum' | 'clear-maximum', amount: number): void }).applyHitPointAdjustment;
 
     apply.call(context, 'damage', 5);
     expect(document.mutable?.hitPoints).toEqual({ current: 5, maximum: 10, temporary: 0 });
     apply.call(context, 'heal', 99);
     expect(document.mutable?.hitPoints).toEqual({ current: 10, maximum: 10, temporary: 0 });
     apply.call(context, 'temp', 4);
+    expect(document.mutable?.hitPoints).toEqual({ current: 10, maximum: 10, temporary: 4 });
+    apply.call(context, 'maximum', 15);
+    apply.call(context, 'heal', 5);
+    expect(document.mutable?.hitPoints).toEqual({ current: 15, maximum: 10, maximumOverride: 15, temporary: 4 });
+    apply.call(context, 'clear-maximum', 0);
     expect(document.mutable?.hitPoints).toEqual({ current: 10, maximum: 10, temporary: 4 });
   });
 

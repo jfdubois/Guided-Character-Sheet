@@ -74,6 +74,8 @@ describe('read-only character sheet renderer', () => {
     });
     const control = rendered.controls.find((candidate) => candidate.text.includes('Hit points:'));
     expect(control?.ariaLabel).toContain('temporary 2');
+    expect(rendered.classText['guided-character-sheet__hit-points-primary']).toEqual(['8/10']);
+    expect(rendered.classText['guided-character-sheet__hit-points-temporary']).toEqual(['+2 temp']);
     control?.dispatch('click');
     expect(onAdjust).toHaveBeenCalledOnce();
   });

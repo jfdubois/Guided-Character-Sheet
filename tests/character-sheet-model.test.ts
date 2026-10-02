@@ -164,6 +164,8 @@ describe('character sheet projection', () => {
     const sheet = projectCharacterSheet(finalized, { species, class: fighter, background: soldier, warnings: [] });
     expect(sheet.header.hitPoints).toEqual({ kind: 'available', value: { current: 8, maximum: 10, temporary: 0 } });
     expect(sheet.header.inspiration).toEqual({ kind: 'available', value: false });
+    finalized.mutable.hitPoints = { current: 12, maximum: 10, maximumOverride: 15, temporary: 0 };
+    expect(projectCharacterSheet(finalized, { species, class: fighter, background: soldier, warnings: [] }).header.hitPoints).toEqual({ kind: 'available', value: { current: 12, maximum: 15, temporary: 0 } });
   });
   it('integrates equipped armor and Stealth disadvantage into the sheet', () => {
     const armorSource: FoundrySourceReference = { sourcePath: 'packs/_source/equipment24/armor/medium/scale-mail.yml', pack: 'dnd5e.equipment24', type: 'equipment', id: 'scale-mail', name: 'Scale Mail' };
