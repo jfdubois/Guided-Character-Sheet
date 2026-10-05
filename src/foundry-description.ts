@@ -1,9 +1,35 @@
-const SECRET_SECTION = /<section\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bsecret\b[^"']*["'])[^>]*>[\s\S]*?<\/section\s*>/gi;
+const SECTION_TAG = /<\/?section\b[^>]*>/gi;
+const SECRET_CLASS = /\bclass\s*=\s*(?:"[^"]*\bsecret\b[^"]*"|'[^']*\bsecret\b[^']*'|[^\s>]*\bsecret\b[^\s>]*)/i;
 const REFERENCE = /&Reference\[([^\]]+)](?:\{([^}]*)})?/gi;
+
+export function stripFoundrySecretSections(value: string): string {
+  let visible = '';
+  let cursor = 0;
+  let hiddenDepth = 0;
+  const sections: boolean[] = [];
+  for (const match of value.matchAll(SECTION_TAG)) {
+    const tag = match[0];
+    const position = match.index;
+    if (hiddenDepth === 0) visible += value.slice(cursor, position);
+    if (/^<\/section/i.test(tag)) {
+      const wasHidden = hiddenDepth > 0;
+      if (sections.pop()) hiddenDepth--;
+      if (!wasHidden) visible += tag;
+    } else {
+      const secret = SECRET_CLASS.test(tag);
+      if (hiddenDepth === 0 && !secret) visible += tag;
+      sections.push(secret);
+      if (secret) hiddenDepth++;
+    }
+    cursor = position + tag.length;
+  }
+  if (hiddenDepth === 0) visible += value.slice(cursor);
+  return visible;
+}
 
 /** Convert Foundry-authored rich text into safe, character-facing plain text. */
 export function normalizeFoundryDescription(value: string): string {
-  return decodeHtmlEntities(value.replace(SECRET_SECTION, ''))
+  return decodeHtmlEntities(stripFoundrySecretSections(value))
     .replace(REFERENCE, (_match, config: string, label: string | undefined) => referenceLabel(config, label))
     .replace(/@Embed\[[^\]]*\]/g, '')
     .replace(/@UUID\[[^\]]*\]\{([^}]*)\}/g, '$1')

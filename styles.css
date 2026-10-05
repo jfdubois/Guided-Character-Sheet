@@ -299,6 +299,35 @@
   padding: var(--size-4-3);
 }
 
+.guided-character-sheet__overview-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: var(--size-4-3);
+}
+
+.guided-character-sheet__overview-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.guided-character-sheet__overview-table caption {
+  font-weight: var(--font-semibold);
+  text-align: start;
+  margin-bottom: var(--size-4-2);
+}
+
+.guided-character-sheet__overview-table th,
+.guided-character-sheet__overview-table td {
+  border: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-2);
+  text-align: start;
+  vertical-align: top;
+}
+
+.guided-character-sheet__overview-table th {
+  background: var(--background-secondary);
+}
+
 .guided-character-sheet__identity-name {
   color: var(--text-accent);
   font-size: var(--font-ui-large);

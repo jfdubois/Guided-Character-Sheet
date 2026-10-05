@@ -23,6 +23,7 @@ import { renderCharacterSheet, type CharacterSheetCharacterOption } from './char
 import type { InventoryProjectionValue } from './inventory-sheet-model';
 import { isFoundrySourceReference } from './foundry-source-reference';
 import type { SourceSnapshot } from './source-tree';
+import { renderFoundryOverview } from './foundry-overview-renderer';
 
 export const CHARACTER_VIEW_TYPE = 'guided-character-sheet';
 export function createAbilityScoreUpdate(selection: AbilityScoreSelection): (document: CharacterDocument) => CharacterDocument { const snapshot = structuredClone(selection); return (document) => withAbilityScores(document, snapshot); }
@@ -107,7 +108,7 @@ export interface SpeciesRenderDependency { name: string; sourcePath: string; }
 export interface SpeciesRenderEntry { level: number; type: string; hint: string; dependencies: SpeciesRenderDependency[]; }
 export interface SpeciesFeatureRenderCallout { name: string; description?: string; sourcePath: string; }
 export interface SpeciesTraitDisplayValue { label: string; value: string; }
-export type SpeciesRenderState = { kind: 'species-summary'; name: string; sourcePath: string; description?: string; movement?: Record<string, unknown>; senses?: Record<string, unknown>; creatureType?: Record<string, unknown>; size?: { options: string[]; selected?: string; required: boolean }; features?: SpeciesFeatureSummary[]; automatic: SpeciesRenderEntry[]; pending: SpeciesRenderEntry[]; dependencies: SpeciesRenderDependency[]; unresolvedDependencies: string[]; unresolvedWarnings: string[] };
+export type SpeciesRenderState = { kind: 'species-summary'; name: string; sourcePath: string; description?: string; overviewHtml?: string; movement?: Record<string, unknown>; senses?: Record<string, unknown>; creatureType?: Record<string, unknown>; size?: { options: string[]; selected?: string; required: boolean }; features?: SpeciesFeatureSummary[]; automatic: SpeciesRenderEntry[]; pending: SpeciesRenderEntry[]; dependencies: SpeciesRenderDependency[]; unresolvedDependencies: string[]; unresolvedWarnings: string[] };
 export interface SpeciesChoiceRenderControl { key: string; label: string; required: number; options: Array<{ value: string; label: string; description?: string; damageTypes?: string[] }>; selected: string[]; }
 export interface SpeciesConfigurationRenderInput { choices?: SpeciesChoiceRenderControl[]; spellChoices?: SpellChoice[]; spellcastingAbility?: SpeciesConfiguration['spellcastingAbility']; warnings?: string[]; unresolvedWarnings?: string[]; }
 export type ClassRenderState = { kind: 'class'; options: CharacterSourceOption[]; diagnostic?: string } | { kind: 'class-unavailable'; message: string } | { kind: 'class-summary'; name: string; sourcePath: string; hitDie: string; targetLevel: number; automatic: ClassAdvancementSummary[]; pending: ClassAdvancementSummary[]; dependencies: SpeciesRenderDependency[]; diagnostics: string[]; choices: ClassAdvancementSelection[]; proficiencies?: ClassSourceSummary['proficiencies']; features?: ClassSourceSummary['features']; scales?: ClassSourceSummary['scales']; startingEquipment?: EquipmentPackageSummary };
@@ -504,6 +505,7 @@ export function getSpeciesRenderState(document: CharacterDocument, summary: Spec
   return {
     kind: 'species-summary', name: summary.source.name, sourcePath: summary.source.sourcePath,
     ...(summary.description === undefined ? {} : { description: summary.description }),
+    ...(summary.overviewHtml === undefined ? {} : { overviewHtml: summary.overviewHtml }),
     ...(summary.movement === undefined ? {} : { movement: summary.movement }),
     ...(summary.senses === undefined ? {} : { senses: summary.senses }),
     ...(summary.creatureType === undefined ? {} : { creatureType: summary.creatureType }),
@@ -1217,7 +1219,7 @@ export class CharacterView extends ItemView {
     root.createDiv({ text: 'Review what this choice provides before continuing.', cls: 'guided-character-sheet__hint' });
     renderLevelOneProgressionSummary(root, getLevelOneProgressionSummary(summary, configuration), this.document!, configuration);
     this.renderClassTraits(root, state);
-    this.renderClassCallout(root, 'Overview', true, (content) => content.createDiv({ text: summary.description ?? 'No description is available for this class.' }));
+    this.renderClassCallout(root, 'Overview', true, (content) => renderFoundryOverview(content, summary.overviewHtml, summary.description ?? 'No description is available for this class.'));
     const features = getClassFeatureCallouts(state);
     if (features.length > 0) {
       root.createEl('h4', { text: 'Features', cls: 'guided-character-sheet__features-heading' });
@@ -1554,7 +1556,7 @@ export class CharacterView extends ItemView {
         select.addEventListener('change', () => { try { this.queueUpdate((document) => withSpeciesConfiguration(document, setSpeciesSize(configuration, select.value))); } catch { /* retain incomplete control */ } });
       } else field.createSpan({ text: speciesSizeLabel(state.size.options[0] ?? '') });
     }
-    this.renderSpeciesCallout(root, 'Overview', true, (content) => { if (state.description !== undefined) content.createDiv({ text: state.description }); else content.createDiv({ text: 'No description is available for this source.' }); });
+    this.renderSpeciesCallout(root, 'Overview', true, (content) => renderFoundryOverview(content, state.overviewHtml, state.description ?? 'No description is available for this source.'));
     const features = getSpeciesFeatureCallouts(state);
     if (features.length > 0) {
       root.createEl('h4', { text: 'Features', cls: 'guided-character-sheet__features-heading' });

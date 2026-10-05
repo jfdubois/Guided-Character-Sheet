@@ -36,6 +36,7 @@ export interface ClassSourceSummary {
   source: FoundrySourceReference;
   ruleset: CharacterRuleset;
   description?: string;
+  overviewHtml?: string;
   hitDie: string;
   primaryAbility?: Record<string, unknown>;
   spellcasting?: Record<string, unknown>;
@@ -129,6 +130,7 @@ export interface SpeciesSourceSummary {
   source: FoundrySourceReference;
   ruleset: CharacterRuleset;
   description?: string;
+  overviewHtml?: string;
   movement?: Record<string, unknown>;
   senses?: Record<string, unknown>;
   creatureType?: Record<string, unknown>;
@@ -446,7 +448,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       return {
         source: record.reference,
         ruleset,
-        ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value) } : {}),
+        ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value), overviewHtml: system.description.value } : {}),
         ...(isRecord(system.movement) ? { movement: system.movement } : {}),
         ...(isRecord(system.senses) ? { senses: system.senses } : {}),
         ...(isRecord(system.type) ? { creatureType: system.type } : {}),
@@ -565,7 +567,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const spellOptions = ruleset === '2024' && spellcasting !== undefined && spellLists.length > 0
         ? (await Promise.all([0, 1].map((level) => catalog.searchSpells({ ruleset, level, spellLists })))).flat()
         : [];
-      return { source: reference, ruleset, ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value) } : {}), hitDie, ...(isRecord(system.primaryAbility) ? { primaryAbility: system.primaryAbility } : {}), ...(spellcasting === undefined ? {} : { spellcasting }), ...(spellOptions.length > 0 ? { spellOptions } : {}), proficiencies: extractClassProficiencies(primaryAdvancements), features: extractClassFeatures(primaryAdvancements, sourceRecords), scales: extractClassScales(primaryAdvancements), advancements, ...(startingEquipment === undefined ? {} : { startingEquipment }) };
+      return { source: reference, ruleset, ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value), overviewHtml: system.description.value } : {}), hitDie, ...(isRecord(system.primaryAbility) ? { primaryAbility: system.primaryAbility } : {}), ...(spellcasting === undefined ? {} : { spellcasting }), ...(spellOptions.length > 0 ? { spellOptions } : {}), proficiencies: extractClassProficiencies(primaryAdvancements), features: extractClassFeatures(primaryAdvancements, sourceRecords), scales: extractClassScales(primaryAdvancements), advancements, ...(startingEquipment === undefined ? {} : { startingEquipment }) };
     },
     async getBackgroundSummary(ruleset, sourcePath): Promise<BackgroundSourceSummary> {
       await readBackgrounds(ruleset);

@@ -1113,6 +1113,7 @@ _id: elf-id`,
 
     await expect(index.getSpeciesSummary('2024', 'packs/_source/origins24/species/elf.yml')).resolves.toMatchObject({
       description: 'Elven Lineage Elves are graceful. Darkvision lets them see in darkness.',
+      overviewHtml: expect.stringContaining('<h3>Elven Lineage</h3>'),
     });
   });
 

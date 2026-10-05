@@ -2,6 +2,10 @@ export function normalizePath(path: string): string {
   return path.replaceAll('\\', '/');
 }
 
+export function sanitizeHTMLToDom(_html: string): DocumentFragment {
+  return { childNodes: [] } as unknown as DocumentFragment;
+}
+
 export class TFile {
   path = '';
   extension = 'json';
