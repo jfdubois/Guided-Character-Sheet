@@ -32,6 +32,13 @@ secrets.json
 # Internal plans, agent instructions, and working reports.
 /AGENTS.md
 /docs/
+!/docs/
+/docs/*
+!/docs/superpowers/
+/docs/superpowers/*
+!/docs/superpowers/specs/
+/docs/superpowers/specs/*
+!/docs/superpowers/specs/2026-10-12-source-backed-passive-effects-design.md
 /.superpowers/
 /.worktrees/
 
