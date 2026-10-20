@@ -17,6 +17,23 @@ const baseDocument = (): CharacterDocument => ({
 });
 
 describe('inventory sheet projection', () => {
+  it.each([
+    ['simpleM', 'simple melee'],
+    ['simpleR', 'simple ranged'],
+    ['martialM', 'martial melee'],
+    ['martialR', 'martial ranged'],
+  ])('shows the Foundry weapon category %s as %s', (category, label) => {
+    const weapon = source('shortbow', 'Shortbow');
+    const document = baseDocument();
+    document.mutable!.inventory.items = [{ entryId: 'weapon', source: weapon, quantity: 1, equipped: false, provenance: [] }];
+    document.mutable!.equipmentStatus = [{ entryId: 'weapon', equipped: false, attuned: false }];
+    const resolved: ResolvedInventoryItems = new Map([['weapon', { kind: 'available', value: summary(weapon, { itemType: 'weapon', category }) }]]);
+
+    const result = projectInventorySheet(document, resolved);
+
+    expect(result.kind === 'available' ? result.rows[0]?.detail : undefined).toEqual(['weapon', label]);
+  });
+
   it('sorts one uninterrupted list and renders a minimal custom item without invented actions', () => {
     const chain = source('chain-mail', 'Chain Mail');
     const shield = source('shield', 'Shield');
@@ -268,5 +285,29 @@ describe('inventory sheet projection', () => {
       ['armor', { kind: 'available', value: summary(armor, { category: 'heavy', armor: { value: 16, dex: 0 } }) }],
     ]), 2);
     expect(result.kind === 'available' ? result.armor.armorClass : null).toEqual({ kind: 'missing', reason: 'Equipment status is missing for Chain Mail.' });
+  });
+
+  it('uses the eligible Unarmored Defense calculation while respecting Monk shield exclusion', () => {
+    const barbarian = projectInventorySheet(baseDocument(), new Map(), 2, { calculation: 'unarmoredBarb', secondaryModifier: 1 });
+    const monk = projectInventorySheet(baseDocument(), new Map(), 2, { calculation: 'unarmoredMonk', secondaryModifier: 0 });
+    expect(barbarian.kind === 'available' ? barbarian.armor.armorClass : null).toEqual({ kind: 'available', value: 13 });
+    expect(monk.kind === 'available' ? monk.armor.armorClass : null).toEqual({ kind: 'available', value: 12 });
+
+    const shield = source('shield', 'Shield');
+    const withShield = baseDocument();
+    withShield.mutable!.inventory.items = [{ entryId: 'shield', source: shield, quantity: 1, equipped: true, provenance: [] }];
+    withShield.mutable!.equipmentStatus = [{ entryId: 'shield', equipped: true, attuned: false }];
+    const shieldedMonk = projectInventorySheet(withShield, new Map([['shield', { kind: 'available', value: summary(shield, { category: 'shield', armor: { value: 2 } }) }]]), 2, { calculation: 'unarmoredMonk', secondaryModifier: 0 });
+    expect(shieldedMonk.kind === 'available' ? shieldedMonk.armor.armorClass : null).toEqual({ kind: 'available', value: 14 });
+
+    const barbarianWithShield = projectInventorySheet(withShield, new Map([['shield', { kind: 'available', value: summary(shield, { category: 'shield', armor: { value: 2 } }) }]]), 2, { calculation: 'unarmoredBarb', secondaryModifier: 1 });
+    expect(barbarianWithShield.kind === 'available' ? barbarianWithShield.armor.armorClass : null).toEqual({ kind: 'available', value: 15 });
+
+    const chain = source('chain-mail', 'Chain Mail');
+    const armored = baseDocument();
+    armored.mutable!.inventory.items = [{ entryId: 'chain', source: chain, quantity: 1, equipped: true, provenance: [] }];
+    armored.mutable!.equipmentStatus = [{ entryId: 'chain', equipped: true, attuned: false }];
+    const armoredBarbarian = projectInventorySheet(armored, new Map([['chain', { kind: 'available', value: summary(chain, { category: 'heavy', armor: { value: 16, dex: 0 } }) }]]), 2, { calculation: 'unarmoredBarb', secondaryModifier: 1 });
+    expect(armoredBarbarian.kind === 'available' ? armoredBarbarian.armor.armorClass : null).toEqual({ kind: 'available', value: 16 });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mutableResetForPeriod, mutableResetForRecovery, recoverableResetForUses } from '../src/resource-period';
+import { mutableRecoveryProfiles, mutableResetForPeriod, mutableResetForRecovery, recoverableResetForUses } from '../src/resource-period';
 
 describe('pinned Foundry recovery periods', () => {
   it.each([['sr', 'short-rest'], ['lr', 'long-rest']] as const)('maps %s', (period, expected) => expect(mutableResetForPeriod(period)).toBe(expected));
@@ -8,6 +8,12 @@ describe('pinned Foundry recovery periods', () => {
 });
 
 describe('recoverable feature uses', () => {
+  it('preserves supported all and deterministic formula recovery profiles', () => {
+    expect(mutableRecoveryProfiles({ maximum: 2, recovery: [{ period: 'lr', type: 'recoverAll' }, { period: 'sr', type: 'formula', formula: '1' }, { period: 'day', type: 'recoverAll' }] })).toEqual([
+      { period: 'long-rest', type: 'recover-all' },
+      { period: 'short-rest', type: 'formula', formula: '1' },
+    ]);
+  });
   it('requires a usable maximum and a supported rest recovery', () => {
     expect(recoverableResetForUses({ maximum: 1, recovery: [{ period: 'sr' }] })).toBe('short-rest');
     expect(recoverableResetForUses({ maximum: 1, recovery: [] })).toBeUndefined();

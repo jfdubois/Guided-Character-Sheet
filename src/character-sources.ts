@@ -63,7 +63,7 @@ export interface GrantedFeatAdvancementSummary {
   abilityOptions?: string[];
   raw: Record<string, unknown>;
 }
-export interface GrantedFeatSourceSummary { source: FoundrySourceReference; description?: string; advancements: GrantedFeatAdvancementSummary[]; }
+export interface GrantedFeatSourceSummary { source: FoundrySourceReference; advancementId?: string; minimumLevel?: number; description?: string; advancements: GrantedFeatAdvancementSummary[]; activeEffects?: Record<string, unknown>[]; }
 export interface BackgroundSourceSummary {
   source: FoundrySourceReference;
   ruleset: CharacterRuleset;
@@ -74,6 +74,7 @@ export interface BackgroundSourceSummary {
   languageChoices: BackgroundLanguageChoice[];
   tools: string[];
   feat?: FoundrySourceReference;
+  grantedFeats?: GrantedFeatSourceSummary[];
   grantedFeat?: GrantedFeatSourceSummary;
   features: BackgroundFeatureSummary[];
   equipment: BackgroundEquipmentGroup[];
@@ -83,8 +84,8 @@ export interface BackgroundSourceSummary {
 
 export interface ClassProficiencyChoice { advancementId: string; count: number; category: string; pool: string[]; }
 export interface ClassProficiencies { armor: string[]; weapons: string[]; tools: string[]; savingThrows: string[]; languages: string[]; skills: string[]; choices: ClassProficiencyChoice[]; }
-export interface ClassFeatureSummary { advancementId: string; level: number; source: FoundrySourceReference; description?: string; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; }
-export interface ClassScaleValueSummary { advancementId: string; title: string; identifier?: string; level: number; value?: number; values: ReadonlyMap<number, FoundryScaleValue>; diagnostics: string[]; }
+export interface ClassFeatureSummary { advancementId: string; level: number; source: FoundrySourceReference; requiresChoice?: { key: string; value: string }; classRestriction?: string; description?: string; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; activeEffects?: Record<string, unknown>[]; }
+export interface ClassScaleValueSummary { advancementId: string; title: string; identifier?: string; level: number; requiresChoice?: { key: string; value: string }; classRestriction?: string; value?: number; values: ReadonlyMap<number, FoundryScaleValue>; diagnostics: string[]; }
 export interface SpeciesScaleValueSummary { advancementId: string; title: string; identifier?: string; level: number; value?: number; values: ReadonlyMap<number, FoundryScaleValue>; diagnostics: string[]; }
 
 export type FoundrySourceReference = CatalogSourceReference;
@@ -120,7 +121,8 @@ export interface SpeciesSpellGrantSummary {
   raw: Record<string, unknown>;
 }
 
-export interface SpeciesFeatureSummary { source: FoundrySourceReference; level: number; description?: string; damageTypes?: string[]; automatic?: boolean; advancementId?: string; selection?: { key: string; value: string }; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; }
+export interface SpeciesFeatureEntitlement { level: number; automatic?: boolean; advancementId?: string; selection?: { key: string; value: string }; }
+export interface SpeciesFeatureSummary { source: FoundrySourceReference; level: number; description?: string; damageTypes?: string[]; automatic?: boolean; advancementId?: string; selection?: { key: string; value: string }; entitlements?: SpeciesFeatureEntitlement[]; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; activeEffects?: Record<string, unknown>[]; rollAnnotations?: SpeciesRollAnnotationSummary[]; savingThrowNotes?: SpeciesSavingThrowNoteSummary[]; hitPointModifiers?: SpeciesHitPointModifierSummary[]; effectDiagnostics?: string[]; }
 export interface SpeciesResistanceSummary { damageType: string; source: FoundrySourceReference; advancementId: string; selected?: boolean; }
 export interface SpeciesRollAnnotationSummary { target: 'saving-throw' | 'skill'; ability: string; mode: 'advantage' | 'disadvantage'; source: FoundrySourceReference; }
 export interface SpeciesSavingThrowNoteSummary { text: string; source: FoundrySourceReference; }
@@ -136,10 +138,6 @@ export interface SpeciesSourceSummary {
   creatureType?: Record<string, unknown>;
   creatureTypeProjection?: { value: string; source: FoundrySourceReference };
   resistances?: SpeciesResistanceSummary[];
-  rollAnnotations?: SpeciesRollAnnotationSummary[];
-  savingThrowNotes?: SpeciesSavingThrowNoteSummary[];
-  hitPointModifiers?: SpeciesHitPointModifierSummary[];
-  effectDiagnostics?: string[];
   size?: SpeciesSizeSummary;
   spellGrants?: SpeciesSpellGrantSummary[];
   scales?: SpeciesScaleValueSummary[];
@@ -160,6 +158,7 @@ export interface SourceIndex {
   listClasses(ruleset: CharacterRuleset): Promise<FoundrySourceReference[]>;
   listBackgrounds(ruleset: CharacterRuleset): Promise<FoundrySourceReference[]>;
   getByUuid(uuid: string): Promise<FoundrySourceReference | null>;
+  getFeatSummary(source: FoundrySourceReference, ruleset: CharacterRuleset): Promise<GrantedFeatSourceSummary | null>;
   getRaw(sourcePath: string): Record<string, unknown> | undefined;
   getSpeciesSummary(ruleset: CharacterRuleset, sourcePath: string): Promise<SpeciesSourceSummary>;
   getClassSummary(ruleset: CharacterRuleset, sourcePath: string): Promise<ClassSourceSummary>;
@@ -168,6 +167,8 @@ export interface SourceIndex {
   searchItems(query: string, filters?: ItemSearchFilters): Promise<FoundryItemSummary[]>;
   searchSpells(filters: SpellSearchFilters): Promise<FoundrySpellSummary[]>;
   resolveSelector(selector: string, ruleset: CharacterRuleset): Promise<FoundryItemSummary[]>;
+  getWeaponMasteryDescriptions(): Promise<ReadonlyMap<string, string>>;
+  getWeaponPropertyDescriptions(ruleset: CharacterRuleset): Promise<ReadonlyMap<string, string>>;
 }
 
 export interface SourceIndexOptions {
@@ -203,6 +204,8 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
   let lookupLoaded = false;
   let lookupSnapshot: SourceSnapshot | undefined;
   const lookupEntries = new Map<string, FoundrySourceReference>();
+  let masteryDescriptionsPromise: Promise<ReadonlyMap<string, string>> | undefined;
+  const propertyDescriptionsPromises = new Map<CharacterRuleset, Promise<ReadonlyMap<string, string>>>();
 
   async function loadLookup(): Promise<void> {
     if (lookupLoaded) return;
@@ -271,9 +274,11 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
     }
   }
 
-  async function projectGrantedFeat(source: FoundrySourceReference, ruleset: CharacterRuleset): Promise<GrantedFeatSourceSummary> {
+  async function projectGrantedFeat(source: FoundrySourceReference, ruleset: CharacterRuleset, advancementId?: string): Promise<GrantedFeatSourceSummary> {
     const raw = sourceRecords.get(source.sourcePath) ?? catalog.getRaw(source.sourcePath);
     const system = raw && isRecord(raw.system) ? raw.system : {};
+    const prerequisites = isRecord(system.prerequisites) ? system.prerequisites : undefined;
+    const minimumLevel = typeof prerequisites?.level === 'number' && Number.isInteger(prerequisites.level) && prerequisites.level >= 1 ? prerequisites.level : undefined;
     const rawAdvancement = system.advancement;
     const entries = rawAdvancement === undefined ? [] : Array.isArray(rawAdvancement)
       ? rawAdvancement.map((value) => ({ value, id: isRecord(value) && typeof value._id === 'string' ? value._id : undefined }))
@@ -301,7 +306,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       });
     }
     const description = isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value) : undefined;
-    return { source, ...(description ? { description } : {}), advancements };
+    return { source, ...(advancementId === undefined ? {} : { advancementId }), ...(minimumLevel === undefined ? {} : { minimumLevel }), ...(description ? { description } : {}), advancements, activeEffects: Array.isArray(raw?.effects) ? raw.effects.filter(isRecord) : [] };
   }
 
   return {
@@ -319,6 +324,25 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const source = records.get(uuid) ?? null;
       if (source) { lookupEntries.set(uuid, source); await persistLookup(); }
       return source;
+    },
+    async getFeatSummary(source, ruleset) {
+      if (source.type !== 'feat') return null;
+      const sourcePack = /^packs\/_source\/([^/]+)\//.exec(source.sourcePath)?.[1];
+      if (sourcePack === undefined || source.pack !== `dnd5e.${sourcePack}`) return null;
+      const raw = await catalog.getRawRecord(source.sourcePath);
+      if (!raw || raw.type !== 'feat' || raw._id !== source.id || typeof raw.name !== 'string' || !isRecord(raw.system)) return null;
+      const sourceRules = isRecord(raw.system.source) ? raw.system.source.rules : undefined;
+      if ((sourceRules === '2014' || sourceRules === '2024') && sourceRules !== ruleset) return null;
+      const canonical: FoundrySourceReference = {
+        sourcePath: source.sourcePath,
+        pack: `dnd5e.${sourcePack}`,
+        type: 'feat',
+        id: raw._id,
+        ...(typeof raw.system.identifier === 'string' ? { identifier: raw.system.identifier } : {}),
+        name: raw.name,
+      };
+      sourceRecords.set(canonical.sourcePath, raw);
+      return projectGrantedFeat(canonical, ruleset);
     },
     getRaw(sourcePath) { return catalog.getRaw(sourcePath); },
     searchSpells: (filters) => catalog.searchSpells(filters),
@@ -392,6 +416,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
           const nestedEntries = Array.isArray(nestedAdvancement) ? nestedAdvancement : isRecord(nestedAdvancement) ? Object.values(nestedAdvancement) : [];
           const nestedRequiresChoice = requiresChoice ?? (!automatic && configuration !== undefined ? { key: `species:${value._id}`, value: dependency.uuid } : undefined);
           await appendAdvancements(nestedEntries, dependency.source.sourcePath, depth + 1, nestedRequiresChoice);
+          visited.delete(dependency.uuid);
         }
         }
       }
@@ -405,10 +430,6 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
         return { advancementId: entry.id, level: entry.level, sizes };
       })();
       const featureMap = new Map<string, SpeciesFeatureSummary>();
-      const rollAnnotations: SpeciesRollAnnotationSummary[] = [];
-      const savingThrowNotes: SpeciesSavingThrowNoteSummary[] = [];
-      const hitPointModifiers: SpeciesHitPointModifierSummary[] = [];
-      const effectDiagnostics: string[] = [];
       for (const advancement of advancements) for (const dependency of advancement.dependencies) {
         if (!dependency.source || dependency.source.type !== 'feat') continue;
         const sourceRecord = sourceRecords.get(dependency.source.sourcePath);
@@ -417,10 +438,20 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
         const damageTypes = featureSystem ? extractDamageTypes(featureSystem) : [];
         const activitySummary = featureSystem ? readFoundryActivities(featureSystem) : { activities: [], diagnostics: [] };
         const uses = featureSystem ? readFoundryUsesDiagnostic(featureSystem) : { uses: undefined, diagnostics: [] };
-        if (sourceRecord && featureSystem) extractSpeciesEffectProjections(sourceRecord, featureSystem, dependency.source, rollAnnotations, savingThrowNotes, hitPointModifiers, effectDiagnostics);
+        const effects = sourceRecord && featureSystem ? extractSpeciesEffectProjections(sourceRecord, featureSystem, dependency.source) : undefined;
         const existing = featureMap.get(dependency.source.sourcePath);
         const selection = advancement.requiresChoice ?? (advancement.automatic ? undefined : { key: `species:${advancement.id}`, value: dependency.uuid });
-        featureMap.set(dependency.source.sourcePath, { source: dependency.source, level: existing?.level ?? advancement.level, ...(description ? { description } : {}), ...(damageTypes.length > 0 ? { damageTypes } : {}), ...(activitySummary.activities.length > 0 ? { activities: activitySummary.activities } : {}), ...(activitySummary.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activitySummary.diagnostics, ...uses.diagnostics] } : {}), ...(uses.uses ? { uses: uses.uses } : {}), automatic: existing?.automatic === true || advancement.automatic, advancementId: existing?.advancementId ?? advancement.id, ...(existing?.selection ?? selection ? { selection: existing?.selection ?? selection } : {}) });
+        const entitlement = { level: advancement.level, automatic: advancement.automatic, advancementId: advancement.id, ...(selection === undefined ? {} : { selection }) };
+        const entitlements = existing?.entitlements ?? (existing === undefined ? [] : [{ level: existing.level, automatic: existing.automatic, advancementId: existing.advancementId, ...(existing.selection === undefined ? {} : { selection: existing.selection }) }]);
+        const allEntitlements = [...entitlements, entitlement];
+        const level = Math.min(...allEntitlements.map((candidate) => candidate.level));
+        const primaryEntitlement = allEntitlements.find((candidate) => candidate.level === level)!;
+        const automatic = allEntitlements.some((candidate) => candidate.level === level && candidate.automatic === true);
+        featureMap.set(dependency.source.sourcePath, { source: dependency.source, level, ...(description ?? existing?.description ? { description: description ?? existing?.description } : {}), ...((damageTypes.length > 0 ? damageTypes : existing?.damageTypes) ? { damageTypes: damageTypes.length > 0 ? damageTypes : existing?.damageTypes } : {}), ...((activitySummary.activities.length > 0 ? activitySummary.activities : existing?.activities) ? { activities: activitySummary.activities.length > 0 ? activitySummary.activities : existing?.activities } : {}), ...(activitySummary.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activitySummary.diagnostics, ...uses.diagnostics] } : existing?.activityDiagnostics ? { activityDiagnostics: existing.activityDiagnostics } : {}), ...(uses.uses ? { uses: uses.uses } : existing?.uses ? { uses: existing.uses } : {}), ...(effects?.rollAnnotations.length ? { rollAnnotations: effects.rollAnnotations } : existing?.rollAnnotations ? { rollAnnotations: existing.rollAnnotations } : {}), ...(effects?.savingThrowNotes.length ? { savingThrowNotes: effects.savingThrowNotes } : existing?.savingThrowNotes ? { savingThrowNotes: existing.savingThrowNotes } : {}), ...(effects?.hitPointModifiers.length ? { hitPointModifiers: effects.hitPointModifiers } : existing?.hitPointModifiers ? { hitPointModifiers: existing.hitPointModifiers } : {}), ...(effects?.diagnostics.length ? { effectDiagnostics: effects.diagnostics } : existing?.effectDiagnostics ? { effectDiagnostics: existing.effectDiagnostics } : {}), automatic, advancementId: primaryEntitlement.advancementId, ...(automatic || primaryEntitlement.selection === undefined ? {} : { selection: primaryEntitlement.selection }), entitlements: allEntitlements });
+      }
+      for (const feature of featureMap.values()) {
+        const featureRecord = sourceRecords.get(feature.source.sourcePath);
+        if (featureRecord && Array.isArray(featureRecord.effects)) feature.activeEffects = featureRecord.effects.filter(isRecord);
       }
       const resistances: SpeciesResistanceSummary[] = advancements.flatMap((advancement) => {
         if (advancement.type !== 'Trait') return [];
@@ -454,10 +485,6 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
         ...(isRecord(system.type) ? { creatureType: system.type } : {}),
         ...(isRecord(system.type) && typeof system.type.value === 'string' ? { creatureTypeProjection: { value: system.type.value, source: record.reference } } : {}),
         ...(resistances.length > 0 ? { resistances } : {}),
-        ...(rollAnnotations.length > 0 ? { rollAnnotations } : {}),
-        ...(savingThrowNotes.length > 0 ? { savingThrowNotes } : {}),
-        ...(hitPointModifiers.length > 0 ? { hitPointModifiers } : {}),
-        ...(effectDiagnostics.length > 0 ? { effectDiagnostics: [...new Set(effectDiagnostics)] } : {}),
         ...(size === undefined ? {} : { size }),
         ...(featureMap.size > 0 ? { features: [...featureMap.values()] } : {}),
         ...(spellGrants.length > 0 ? { spellGrants } : {}),
@@ -481,7 +508,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       if (entries === null) throw new Error(`Invalid advancement data at ${sourcePath}`);
       const advancements: ClassAdvancementSummary[] = [];
       const visitedFeatureAdvancements = new Set<string>();
-      async function appendFeatureAdvancements(values: unknown[], context: string, inheritedLevel: number, requiresChoice: { key: string; value: string }, depth: number): Promise<void> {
+      async function appendFeatureAdvancements(values: unknown[], context: string, inheritedLevel: number, requiresChoice: { key: string; value: string } | undefined, depth: number): Promise<void> {
         if (depth > 8) return;
         for (const [index, value] of values.entries()) {
           if (!isRecord(value) || typeof value._id !== 'string' || typeof value.type !== 'string') throw new Error(`Invalid nested advancement entry at ${context} system.advancement[${index}]`);
@@ -504,14 +531,17 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
           if (value.type === 'ItemChoice' && configuration.type === 'spell' && spellMetadata?.valid !== true) dependencies = [...dependencies, { uuid: 'spell:*', source: null, reason: 'unsupported spell restriction' }];
           rememberDependencySources(dependencies);
           const level = typeof value.level === 'number' && value.level > 0 ? value.level : inheritedLevel;
-          advancements.push({ id: value._id, type: value.type, level, title: typeof value.title === 'string' ? value.title : value.type, hint: typeof value.hint === 'string' ? value.hint : '', dependencies, ...(spellMetadata?.valid === true ? { spellLevel: spellMetadata.spellLevel, spellLists: spellMetadata.spellLists, abilityOptions: spellMetadata.abilityOptions } : {}), requiresChoice, raw: value });
+          advancements.push({ id: value._id, type: value.type, level, title: typeof value.title === 'string' ? value.title : value.type, hint: typeof value.hint === 'string' ? value.hint : '', dependencies, ...(spellMetadata?.valid === true ? { spellLevel: spellMetadata.spellLevel, spellLists: spellMetadata.spellLists, abilityOptions: spellMetadata.abilityOptions } : {}), ...(requiresChoice === undefined ? {} : { requiresChoice }), raw: value });
           for (const dependency of dependencies) {
             if (!dependency.source || dependency.uuid.includes(':')) continue;
             const nested = sourceRecords.get(dependency.source.sourcePath) ?? catalog.getRaw(dependency.source.sourcePath);
             const nestedSystem = nested && isRecord(nested.system) ? nested.system : undefined;
             const nestedAdvancement = nestedSystem?.advancement;
             const nestedEntries = Array.isArray(nestedAdvancement) ? nestedAdvancement : isRecord(nestedAdvancement) ? Object.values(nestedAdvancement) : [];
-            if (nestedEntries.length > 0) await appendFeatureAdvancements(nestedEntries, dependency.source.sourcePath, level, { key: `class:${value._id}`, value: dependency.uuid }, depth + 1);
+            const nestedRequirement = classAdvancementRequiresSelection(value.type, configuration)
+              ? { key: `class:${value._id}`, value: dependency.uuid }
+              : requiresChoice;
+            if (nestedEntries.length > 0) await appendFeatureAdvancements(nestedEntries, dependency.source.sourcePath, level, nestedRequirement, depth + 1);
           }
         }
       }
@@ -552,14 +582,18 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
           const nestedSystem = nested && isRecord(nested.system) ? nested.system : undefined;
           const nestedAdvancement = nestedSystem?.advancement;
           const nestedEntries = Array.isArray(nestedAdvancement) ? nestedAdvancement : isRecord(nestedAdvancement) ? Object.values(nestedAdvancement) : [];
-          if (dependency.source && nestedEntries.length > 0) await appendFeatureAdvancements(nestedEntries, dependency.source.sourcePath, typeof entry.level === 'number' ? entry.level : 0, { key: `class:${entry._id}`, value: dependency.uuid }, 0);
+          const nestedRequirement = classAdvancementRequiresSelection(entry.type, configuration)
+            ? { key: `class:${entry._id}`, value: dependency.uuid }
+            : undefined;
+          if (dependency.source && nestedEntries.length > 0) await appendFeatureAdvancements(nestedEntries, dependency.source.sourcePath, typeof entry.level === 'number' ? entry.level : 0, nestedRequirement, 0);
         }
       }
       const hitDie = ruleset === '2014'
         ? typeof system.hitDice === 'string' ? system.hitDice : ''
         : isRecord(system.hd) && typeof system.hd.denomination === 'string' ? system.hd.denomination : '';
       if (!hitDie) throw new Error(`Missing class hit die at ${sourcePath}`);
-      const primaryAdvancements = advancements.filter((entry) => entry.level <= 1 && (entry.classRestriction === undefined || entry.classRestriction === 'primary'));
+      const primaryLevelOneAdvancements = advancements.filter((entry) => entry.level <= 1 && (entry.classRestriction === undefined || entry.classRestriction === 'primary'));
+      const primaryClassAdvancements = advancements.filter((entry) => entry.classRestriction === undefined || entry.classRestriction === 'primary');
       const startingEquipment = Array.isArray(system.startingEquipment) ? await projectStartingEquipment(system.startingEquipment, ruleset === '2024' && typeof system.wealth === 'string' ? system.wealth : undefined) : undefined;
       const spellcasting = isRecord(system.spellcasting) ? system.spellcasting : undefined;
       const configuredSpellLists = stringValues(spellcasting?.spellLists);
@@ -567,7 +601,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const spellOptions = ruleset === '2024' && spellcasting !== undefined && spellLists.length > 0
         ? (await Promise.all([0, 1].map((level) => catalog.searchSpells({ ruleset, level, spellLists })))).flat()
         : [];
-      return { source: reference, ruleset, ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value), overviewHtml: system.description.value } : {}), hitDie, ...(isRecord(system.primaryAbility) ? { primaryAbility: system.primaryAbility } : {}), ...(spellcasting === undefined ? {} : { spellcasting }), ...(spellOptions.length > 0 ? { spellOptions } : {}), proficiencies: extractClassProficiencies(primaryAdvancements), features: extractClassFeatures(primaryAdvancements, sourceRecords), scales: extractClassScales(primaryAdvancements), advancements, ...(startingEquipment === undefined ? {} : { startingEquipment }) };
+      return { source: reference, ruleset, ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value), overviewHtml: system.description.value } : {}), hitDie, ...(isRecord(system.primaryAbility) ? { primaryAbility: system.primaryAbility } : {}), ...(spellcasting === undefined ? {} : { spellcasting }), ...(spellOptions.length > 0 ? { spellOptions } : {}), proficiencies: extractClassProficiencies(primaryLevelOneAdvancements), features: extractClassFeatures(primaryClassAdvancements, sourceRecords), scales: extractClassScales(primaryClassAdvancements), advancements, ...(startingEquipment === undefined ? {} : { startingEquipment }) };
     },
     async getBackgroundSummary(ruleset, sourcePath): Promise<BackgroundSourceSummary> {
       await readBackgrounds(ruleset);
@@ -601,8 +635,9 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       }
       const itemGrants = advancements.filter((entry) => entry.type === 'ItemGrant');
       const granted = itemGrants.flatMap((entry) => entry.dependencies.flatMap((dependency) => dependency.source ? [{ advancementId: entry.id, source: dependency.source }] : []));
-      const grantedFeatEntry = granted.find((entry) => entry.source.type === 'feat');
-      const grantedFeat = ruleset === '2024' && grantedFeatEntry !== undefined ? await projectGrantedFeat(grantedFeatEntry.source, ruleset) : undefined;
+      const grantedFeatEntries = granted.filter((entry) => entry.source.type === 'feat');
+      const grantedFeats = await Promise.all(grantedFeatEntries.map((entry) => projectGrantedFeat(entry.source, ruleset, entry.advancementId)));
+      const grantedFeat = grantedFeats[0];
       const featureRecords = granted.map((entry) => { const source = sourceRecords.get(entry.source.sourcePath); const system = source && isRecord(source.system) ? source.system : undefined; const description = system && isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value) : undefined; const activitySummary = system ? readFoundryActivities(system) : { activities: [], diagnostics: [] }; const uses = system ? readFoundryUsesDiagnostic(system) : { uses: undefined, diagnostics: [] }; return { ...entry, ...(description ? { description } : {}), ...(activitySummary.activities.length > 0 ? { activities: activitySummary.activities } : {}), ...(activitySummary.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activitySummary.diagnostics, ...uses.diagnostics] } : {}), ...(uses.uses ? { uses: uses.uses } : {}) }; });
       const ability = advancements.find((entry) => entry.type === 'AbilityScoreImprovement');
       const abilityConfig = ability && isRecord(ability.raw.configuration) ? ability.raw.configuration : undefined;
@@ -610,8 +645,55 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const rawDescription = isRecord(system.description) && typeof system.description.value === 'string' ? system.description.value : undefined;
       const description = rawDescription === undefined ? undefined : toPlainText(ruleset === '2014' ? rawDescription.split(/<hr\s*\/?>/i, 1)[0] : rawDescription);
       const startingEquipment = Array.isArray(system.startingEquipment) ? await projectStartingEquipment(system.startingEquipment, ruleset === '2024' && typeof system.wealth === 'string' ? system.wealth : undefined) : undefined;
-      const featReference = ruleset === '2014' ? granted[0]?.source : grantedFeatEntry?.source;
-      return { source: record.reference, ruleset, ...(description ? { description } : {}), ...(abilityConfig ? { abilityScores: { ...(ability ? { advancementId: ability.id } : {}), ...(typeof abilityConfig.points === 'number' ? { points: abilityConfig.points } : {}), ...(Array.isArray(abilityConfig.locked) ? { locked: stringValues(abilityConfig.locked) } : {}), ...(isRecord(abilityConfig.fixed) ? { fixed: abilityConfig.fixed as Record<string, number> } : {}), ...(typeof abilityConfig.cap === 'number' ? { cap: abilityConfig.cap } : {}), } } : {}), skills, languages, languageChoices, tools, ...(featReference ? { feat: featReference, ...(grantedFeat === undefined ? {} : { grantedFeat }) } : {}), features: ruleset === '2014' ? featureRecords : [], equipment, ...(typeof system.wealth === 'string' ? { wealth: system.wealth } : {}), ...(startingEquipment === undefined ? {} : { startingEquipment }) };
+      const featReference = ruleset === '2014' ? granted[0]?.source : grantedFeatEntries[0]?.source;
+      return { source: record.reference, ruleset, ...(description ? { description } : {}), ...(abilityConfig ? { abilityScores: { ...(ability ? { advancementId: ability.id } : {}), ...(typeof abilityConfig.points === 'number' ? { points: abilityConfig.points } : {}), ...(Array.isArray(abilityConfig.locked) ? { locked: stringValues(abilityConfig.locked) } : {}), ...(isRecord(abilityConfig.fixed) ? { fixed: abilityConfig.fixed as Record<string, number> } : {}), ...(typeof abilityConfig.cap === 'number' ? { cap: abilityConfig.cap } : {}), } } : {}), skills, languages, languageChoices, tools, grantedFeats, ...(featReference ? { feat: featReference, ...(grantedFeat === undefined ? {} : { grantedFeat }) } : {}), features: ruleset === '2014' ? featureRecords : [], equipment, ...(typeof system.wealth === 'string' ? { wealth: system.wealth } : {}), ...(startingEquipment === undefined ? {} : { startingEquipment }) };
+    },
+    async getWeaponMasteryDescriptions() {
+      masteryDescriptionsPromise ??= (async () => {
+        const sourcePath = 'packs/_source/content24/appendices/appendix-d-rule-references.yml';
+        const raw = await catalog.getRawRecord(sourcePath);
+        if (!raw || !Array.isArray(raw.pages)) throw new Error(`Weapon Mastery rules are unavailable in the pinned source: ${sourcePath}`);
+        const expected = ['cleave', 'graze', 'nick', 'push', 'sap', 'slow', 'topple', 'vex'];
+        const descriptions = new Map<string, string>();
+        for (const page of raw.pages) {
+          if (!isRecord(page) || typeof page.name !== 'string' || !isRecord(page.text) || typeof page.text.content !== 'string') continue;
+          const name = page.name.toLocaleLowerCase();
+          if (!expected.includes(name)) continue;
+          const description = toPlainText(page.text.content);
+          if (description.length > 0) descriptions.set(name, description);
+        }
+        const missing = expected.filter((name) => !descriptions.has(name));
+        if (missing.length > 0) throw new Error(`Weapon Mastery rules are missing from the pinned source: ${missing.join(', ')}`);
+        return descriptions;
+      })();
+      return masteryDescriptionsPromise;
+    },
+    async getWeaponPropertyDescriptions(ruleset) {
+      const existing = propertyDescriptionsPromises.get(ruleset);
+      if (existing !== undefined) return existing;
+      const promise = (async () => {
+        const sourcePath = ruleset === '2024' ? 'packs/_source/content24/chapter-6/equipment.yml' : 'packs/_source/rules/chapter-5-equipment.yml';
+        const raw = await catalog.getRawRecord(sourcePath);
+        const page = Array.isArray(raw?.pages) ? raw.pages.find((candidate) => isRecord(candidate) && candidate.name === (ruleset === '2024' ? 'Properties' : 'Weapons')) : undefined;
+        if (!isRecord(page) || !isRecord(page.text) || typeof page.text.content !== 'string') throw new Error(`Weapon properties are unavailable in the pinned source: ${sourcePath}`);
+        const names: Readonly<Record<string, string>> = { Ammunition: 'amm', Finesse: 'fin', Heavy: 'hvy', Light: 'lgt', Loading: 'lod', Reach: 'rch', Special: 'spc', Thrown: 'thr', 'Two-Handed': 'two', Versatile: 'ver' };
+        const descriptions = new Map<string, string>();
+        const entries = ruleset === '2024'
+          ? page.text.content.matchAll(/<h3>([^<]+)<\/h3>([\s\S]*?)(?=<h3>|$)/g)
+          : page.text.content.matchAll(/<p><strong>([A-Za-z-]+)\.\s*<\/strong>([\s\S]*?)(?=<p><strong>[A-Za-z-]+\.|<h3>|$)/g);
+        for (const match of entries) {
+          const code = names[match[1]!];
+          if (code === undefined) continue;
+          const description = toPlainText(match[2]!);
+          if (description.length > 0) descriptions.set(code, description);
+        }
+        const expected = Object.entries(names).filter(([name]) => ruleset === '2014' || name !== 'Special').map(([, code]) => code);
+        const missing = expected.filter((code) => !descriptions.has(code));
+        if (missing.length > 0) throw new Error(`Weapon property rules are missing from the pinned source: ${missing.join(', ')}`);
+        return descriptions;
+      })();
+      propertyDescriptionsPromises.set(ruleset, promise);
+      return promise;
     },
     async getItemSummary(ruleset, sourcePath) { return catalog.getItemSummary(ruleset, sourcePath); },
     async searchItems(query, filters) { return catalog.searchItems(query, filters); },
@@ -724,14 +806,25 @@ function extractDamageTypes(system: Record<string, unknown>): string[] {
   return [...new Set(types)];
 }
 
-function extractSpeciesEffectProjections(raw: Record<string, unknown>, system: Record<string, unknown>, source: FoundrySourceReference, annotations: SpeciesRollAnnotationSummary[], notes: SpeciesSavingThrowNoteSummary[], hitPointModifiers: SpeciesHitPointModifierSummary[], diagnostics: string[]): void {
+interface SpeciesEffectProjections {
+  rollAnnotations: SpeciesRollAnnotationSummary[];
+  savingThrowNotes: SpeciesSavingThrowNoteSummary[];
+  hitPointModifiers: SpeciesHitPointModifierSummary[];
+  diagnostics: string[];
+}
+
+function extractSpeciesEffectProjections(raw: Record<string, unknown>, system: Record<string, unknown>, source: FoundrySourceReference): SpeciesEffectProjections {
+  const rollAnnotations: SpeciesRollAnnotationSummary[] = [];
+  const savingThrowNotes: SpeciesSavingThrowNoteSummary[] = [];
+  const hitPointModifiers: SpeciesHitPointModifierSummary[] = [];
+  const diagnostics: string[] = [];
   const identifier = typeof system.identifier === 'string' ? system.identifier : undefined;
   const isDwarvenToughness = identifier === 'dwarven-toughness';
   let supportedHitPointChanges = 0;
   let malformedHitPointChange = false;
   const effects = Array.isArray(raw.effects) ? raw.effects : [];
   for (const effect of effects) {
-    if (!isRecord(effect)) continue;
+    if (!isRecord(effect) || effect.disabled === true || effect.transfer === false) continue;
     const effectSystem = isRecord(effect.system) ? effect.system : undefined;
     const changes = effectSystem && Array.isArray(effectSystem.changes) ? effectSystem.changes : [];
     for (const change of changes) {
@@ -741,15 +834,14 @@ function extractSpeciesEffectProjections(raw: Record<string, unknown>, system: R
         else malformedHitPointChange = true;
         continue;
       }
-      if (effect.disabled === true) continue;
       const match = /^system\.abilities\.(str|dex|con|int|wis|cha)\.save\.roll\.mode$/i.exec(change.key);
       if (match && (change.value === 1 || change.value === '1')) {
-        annotations.push({ target: 'saving-throw', ability: match[1]!.toLowerCase(), mode: 'advantage', source });
+        rollAnnotations.push({ target: 'saving-throw', ability: match[1]!.toLowerCase(), mode: 'advantage', source });
       } else if (match && (change.value === -1 || change.value === '-1')) {
-        annotations.push({ target: 'saving-throw', ability: match[1]!.toLowerCase(), mode: 'disadvantage', source });
+        rollAnnotations.push({ target: 'saving-throw', ability: match[1]!.toLowerCase(), mode: 'disadvantage', source });
       } else if (match) {
         diagnostics.push(`Unsupported stable effect change from ${source.name}: ${change.key}.`);
-      } else if (change.key.startsWith('system.') || change.key.startsWith('flags.')) {
+      } else if (change.key.startsWith('system.')) {
         diagnostics.push(`Unsupported stable effect change from ${source.name}: ${change.key}.`);
       }
     }
@@ -763,8 +855,9 @@ function extractSpeciesEffectProjections(raw: Record<string, unknown>, system: R
   }
   const description = isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value, system) : '';
   if (/advantage on saving throws you make to avoid or end the Poisoned condition/i.test(description)) {
-    notes.push({ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source });
+    savingThrowNotes.push({ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source });
   }
+  return { rollAnnotations, savingThrowNotes, hitPointModifiers, diagnostics: [...new Set(diagnostics)] };
 }
 
 function grantedCantripMetadata(raw: Record<string, unknown>): { spellList: string; hint: string } | undefined {
@@ -804,7 +897,7 @@ function extractClassFeatures(advancements: ClassAdvancementSummary[], records: 
     const system = record && isRecord(record.system) ? record.system : {};
     const description = isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value, system) : undefined;
     const activitySummary = readFoundryActivities(system); const uses = readFoundryUsesDiagnostic(system);
-    return [{ advancementId: entry.id, level: entry.level, source: dependency.source, ...(description ? { description } : {}), ...(activitySummary.activities.length > 0 ? { activities: activitySummary.activities } : {}), ...(activitySummary.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activitySummary.diagnostics, ...uses.diagnostics] } : {}), ...(uses.uses ? { uses: uses.uses } : {}) }];
+    return [{ advancementId: entry.id, level: entry.level, source: dependency.source, ...(entry.requiresChoice === undefined ? {} : { requiresChoice: { ...entry.requiresChoice } }), ...(entry.classRestriction === undefined ? {} : { classRestriction: entry.classRestriction }), ...(description ? { description } : {}), ...(activitySummary.activities.length > 0 ? { activities: activitySummary.activities } : {}), ...(activitySummary.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activitySummary.diagnostics, ...uses.diagnostics] } : {}), ...(uses.uses ? { uses: uses.uses } : {}), ...(record && Array.isArray(record.effects) ? { activeEffects: record.effects.filter(isRecord) } : {}) }];
   }));
 }
 
@@ -826,7 +919,7 @@ function extractClassScales(advancements: ClassAdvancementSummary[]): ClassScale
     if (!identifier) diagnostics.push(`Scale advancement ${entry.id} has no usable identifier or title.`);
     const levelOneValue = values.get(1);
     const value = levelOneValue?.type === 'number' ? levelOneValue.value : undefined;
-    return { advancementId: entry.id, title: entry.title, ...(identifier === undefined ? {} : { identifier }), level: entry.level, ...(value === undefined ? {} : { value }), values, diagnostics };
+    return { advancementId: entry.id, title: entry.title, ...(identifier === undefined ? {} : { identifier }), level: entry.level, ...(entry.requiresChoice === undefined ? {} : { requiresChoice: { ...entry.requiresChoice } }), ...(entry.classRestriction === undefined ? {} : { classRestriction: entry.classRestriction }), ...(value === undefined ? {} : { value }), values, diagnostics };
   });
 }
 
@@ -844,6 +937,10 @@ function hasConfiguredChoice(configuration: Record<string, unknown>): boolean {
   if (Array.isArray(choice)) return choice.length > 0;
   if (isRecord(choice)) return Object.keys(choice).length > 0;
   return choice !== undefined && choice !== null;
+}
+
+function classAdvancementRequiresSelection(type: string, configuration: Record<string, unknown>): boolean {
+  return type === 'ItemChoice' || type === 'Subclass' || type === 'AbilityScoreImprovement' && hasConfiguredChoice(configuration);
 }
 
 function toPlainText(value: string, system?: Record<string, unknown>): string {

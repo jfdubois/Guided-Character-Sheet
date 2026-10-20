@@ -1,15 +1,19 @@
 import { ABILITIES, calculateAbilityScores, collectAbilityBonuses, sumAbilityBonuses, type Ability, type AbilityScoreResults } from './ability-scores';
 import type { CharacterDocument } from './character-model';
-import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from './character-sources';
-import { getLevelOneClassProgression } from './level-one-progression';
+import type { BackgroundSourceSummary, ClassSourceSummary, GrantedFeatSourceSummary, SpeciesSourceSummary } from './character-sources';
 import { projectInventorySheet, type InventorySheetProjection, type ResolvedInventoryItems } from './inventory-sheet-model';
 import { projectSpellSheet, type SpellSheetProjection } from './spell-sheet-model';
 import { projectFeatureSheet, type FeatureSheetProjection } from './feature-sheet-model';
 import { projectBackgroundSheet, type BackgroundSheetProjection } from './background-sheet-model';
-import type { FoundrySourceReference, FoundrySpellSummary } from './foundry-source-catalog';
+import { languageSelectorLabel, type FoundrySourceReference, type FoundrySpellSummary } from './foundry-source-catalog';
 import { projectActionSheet, type ActionSheetProjection } from './action-sheet-model';
 import { isRecord } from './foundry-utils';
 import { effectiveHitPointMaximum } from './mutable-character-state';
+import { getEligibleSpeciesFeatures, totalCharacterLevel } from './species-feature-eligibility';
+import { getEligibleClassProficiencies } from './class-proficiency-eligibility';
+import { proficiencyBonusForLevel } from './proficiency-bonus';
+import { collectEligibleCharacterEffects } from './eligible-character-effects';
+import type { PassiveEffectContribution } from './passive-effects';
 
 export type SheetValue<T> =
   | { kind: 'available'; value: T }
@@ -25,6 +29,10 @@ export interface CharacterSheetSources {
   spellSummaries?: ReadonlyMap<string, FoundrySpellSummary>;
   grantedSpells?: FoundrySourceReference[];
   toolLabels?: ReadonlyMap<string, string>;
+  weaponLabels?: ReadonlyMap<string, string>;
+  weaponPropertyDescriptions?: ReadonlyMap<string, string>;
+  weaponMasteryDescriptions?: ReadonlyMap<string, string>;
+  selectedFeatSummaries?: ReadonlyMap<string, GrantedFeatSourceSummary | null>;
   warnings: string[];
 }
 
@@ -34,6 +42,7 @@ export interface CharacterSheetProjection {
     ruleset: string;
     species: SheetValue<string>;
     size?: SheetValue<string>;
+    creatureType: SheetValue<string>;
     className: SheetValue<string>;
     level: SheetValue<number>;
     background: SheetValue<string>;
@@ -49,7 +58,7 @@ export interface CharacterSheetProjection {
   abilities: Array<{ key: Ability; label: string; score: SheetValue<number>; modifier: SheetValue<number> }>;
   savingThrows: Array<{ ability: Ability; label: string; proficient: SheetValue<boolean>; modifier: SheetValue<number>; annotations?: Array<{ marker: 'A' | 'D'; source: string }> }>;
   skills: Array<{ key: string; label: string; ability: SheetValue<Ability>; proficient: SheetValue<boolean>; expertise?: SheetValue<boolean>; training?: SheetValue<0 | 1 | 2>; modifier: SheetValue<number>; disadvantageSources: string[]; annotations?: Array<{ marker: 'A' | 'D'; source: string }> }>;
-  defenses?: { creatureType: SheetValue<string>; resistances: Array<{ damageType: string; source: string }> };
+  defenses?: { resistances: Array<{ damageType: string; source: string }> };
   savingThrowNotes?: Array<{ text: string; source: string }>;
   senses: Array<{ label: string; value: SheetValue<string | number> }>;
   training: Array<{ label: string; values: SheetValue<string[]> }>;
@@ -103,6 +112,7 @@ const TRAINING_LABELS: Readonly<Record<string, string>> = {
   'weapon:sim': 'Simple weapons',
   'weapon:mar': 'Martial weapons',
   'tool:gaming': 'Gaming set',
+  'tool:thief': "Thieves' tools",
   'languages:common': 'Common',
 };
 
@@ -117,22 +127,37 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
   const results = canCalculateAbilities
     ? calculateAbilityScores(document.abilityScores!, sumAbilityBonuses(collectAbilityBonuses(sources.species, sources.class, progression, sources.background, document.backgroundChoices?.abilityScores)))
     : undefined;
+  const projectedProficiencyBonus = proficiencyBonusForLevel(totalCharacterLevel(document));
   const proficiencyBonus = sources.class === undefined
     ? missing<number>('Class source is unavailable.')
-    : available(getLevelOneClassProgression(sources.class).proficiencyBonus);
+    : projectedProficiencyBonus === undefined ? missing<number>('Class level is unavailable.') : available(projectedProficiencyBonus);
+  const passiveEffects = collectEligibleCharacterEffects(document, sources);
+  warnings.push(...passiveEffects.diagnostics.map((entry) => entry.message));
   const selectors = collectSelectors(document, sources);
+  for (const contribution of passiveEffects.contributions) {
+    if (contribution.target === 'armor-proficiency') selectors.armor.add(contribution.value);
+    else if (contribution.target === 'weapon-proficiency') selectors.weapons.add(contribution.value);
+  }
+  const eligibleSpeciesFeatures = getEligibleSpeciesFeatures(document, sources.species);
   collectUnknownSelectors(selectors.saves, 'saves', new Set(ABILITIES), warnings);
   collectUnknownSelectors(selectors.skills, 'skills', new Set(SKILLS.map(({ key }) => key)), warnings);
-  const inventory = projectInventorySheet(document, sources.inventoryItems ?? new Map(), results?.dex.modifier);
-  const spells = projectSpellSheet(document, { class: sources.class, species: sources.species, background: sources.background, progression, abilityResults: results, proficiencyBonus, spellSummaries: sources.spellSummaries ?? new Map(), grantedSpells: sources.grantedSpells });
+  const armorModes = passiveEffects.contributions.filter((effect) => effect.target === 'armor-class-calculation');
+  const selectedArmorMode = armorModes[0];
+  if (new Set(armorModes.map((effect) => effect.value)).size > 1) warnings.push('Conflicting Unarmored Defense calculations prevent automatic armor class projection.');
+  const armorMode = new Set(armorModes.map((effect) => effect.value)).size > 1 ? undefined : selectedArmorMode;
+  const inventory = projectInventorySheet(document, sources.inventoryItems ?? new Map(), results?.dex.modifier, armorMode === undefined || results === undefined ? undefined : { calculation: armorMode.value, secondaryModifier: armorMode.value === 'unarmoredBarb' ? results.con.modifier : results.wis.modifier });
+  const spells = projectSpellSheet(document, { class: sources.class, species: sources.species, background: sources.background, progression, abilityResults: results, proficiencyBonus, spellSummaries: sources.spellSummaries ?? new Map(), grantedSpells: sources.grantedSpells, passiveEffects: passiveEffects.contributions });
   const features = projectFeatureSheet(document, { class: sources.class, species: sources.species, background: sources.background });
   const backgroundDetails = projectBackgroundSheet(document, { background: sources.background, abilityResults: results, abilityBonuses: sources.background === undefined ? undefined : collectAbilityBonuses(sources.species, sources.class, progression, sources.background, document.backgroundChoices?.abilityScores) });
   const actions = projectActionSheet(document, {
     inventoryItems: sources.inventoryItems,
     abilityResults: results,
     proficiencyBonus,
-    weaponTraining: sources.class?.proficiencies?.weapons ?? [],
+    passiveEffects: passiveEffects.contributions,
+    weaponTraining: [...selectors.weapons].map((selector) => selector.startsWith('weapon:') ? selector : `weapon:${selector}`),
     weaponMasteries: collectWeaponMasteries(document, sources.class),
+    weaponPropertyDescriptions: sources.weaponPropertyDescriptions,
+    weaponMasteryDescriptions: sources.weaponMasteryDescriptions,
     spellRows: spells.kind === 'empty' ? [] : [...spells.cantrips, ...spells.levels.flatMap((level) => level.spells)].map((row) => ({ name: row.name, level: row.level, source: row.source, prepared: row.prepared, ownership: row.ownership })),
     spellAttackBonus: spells.kind === 'empty' ? undefined : spells.spellAttack,
     spellSaveDc: spells.kind === 'empty' ? undefined : spells.saveDc,
@@ -145,8 +170,13 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
   warnings.push(...actions.warnings);
   const armorClass = inventory.kind === 'available' ? inventory.armor.armorClass : missing<number>(inventory.reason);
   const stealthDisadvantageSources = inventory.kind === 'available' ? inventory.armor.stealthDisadvantageSources : [];
-  const skills = SKILLS.map((skill) => ({ ...skillRow(skill, results, proficiencyBonus, selectors.skills, selectors.expertise, canCalculateAbilities, warnings), disadvantageSources: skill.key === 'ste' ? [...stealthDisadvantageSources] : [] }));
-  const saveAnnotations = sources.species?.rollAnnotations?.filter((annotation) => annotation.target === 'saving-throw') ?? [];
+  const skillBonuses = passiveSkillBonuses(passiveEffects.contributions, results);
+  const skills = SKILLS.map((skill) => {
+    const row = skillRow(skill, results, proficiencyBonus, selectors.skills, selectors.expertise, canCalculateAbilities, warnings);
+    const bonus = skillBonuses.get(skill.key) ?? 0;
+    return { ...row, modifier: row.modifier.kind === 'available' && bonus !== 0 ? available(row.modifier.value + bonus) : row.modifier, disadvantageSources: skill.key === 'ste' ? [...stealthDisadvantageSources] : [] };
+  });
+  const saveAnnotations = eligibleSpeciesFeatures.flatMap((feature) => feature.rollAnnotations ?? []).filter((annotation) => annotation.target === 'saving-throw');
   const selectedResistances = new Set(document.speciesConfiguration?.choices.flatMap((choice) => choice.selected).filter((value) => value.startsWith('dr:')).map((value) => value.slice(3)) ?? []);
   const resistanceRows = (sources.species?.resistances ?? [])
     .filter((resistance) => resistance.selected !== false || selectedResistances.has(resistance.damageType))
@@ -159,6 +189,7 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
       ruleset: document.ruleset ?? 'Not selected',
       species: identityValue(sources.species?.source.name, document.origin?.identifier, 'Species has not been selected.'),
       size: projectSpeciesSize(document, sources.species),
+      creatureType: sources.species?.creatureTypeProjection !== undefined ? available(humanize(sources.species.creatureTypeProjection.value)) : typeof sources.species?.creatureType?.value === 'string' ? available(humanize(sources.species.creatureType.value)) : missing('Creature type is unavailable from the species source.'),
       className: identityValue(sources.class?.source.name, progression?.class.identifier, 'Class has not been selected.'),
       level: progression === undefined ? missing('Class level has not been selected.') : available(progression.targetLevel),
       background: identityValue(sources.background?.source.name, document.background?.identifier, 'Background has not been selected.'),
@@ -166,7 +197,7 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
     header: {
       proficiencyBonus,
       speed: movementValue(sources.species),
-      initiative: abilityModifier(results, 'dex', 'Initiative requires complete ability-score sources.'),
+      initiative: projectInitiative(results, proficiencyBonus, passiveEffects.contributions),
       armorClass,
       hitPoints: document.mutable?.hitPoints === undefined ? missing('Hit points are not available from character handover.') : available({ current: document.mutable.hitPoints.current, maximum: effectiveHitPointMaximum(document.mutable.hitPoints), temporary: document.mutable.hitPoints.temporary ?? 0 }),
       inspiration: document.mutable?.inspiration === undefined ? missing('Inspiration is not available from character handover.') : available(document.mutable.inspiration),
@@ -179,9 +210,9 @@ export function projectCharacterSheet(document: CharacterDocument, sources: Char
     })),
     savingThrows: ABILITIES.map((ability) => savingThrow(ability, results, proficiencyBonus, selectors.saves, sources.class !== undefined, saveAnnotations.filter((annotation) => annotation.ability === ability).map((annotation) => ({ marker: annotation.mode === 'advantage' ? 'A' as const : 'D' as const, source: annotation.source.name })))),
     skills,
-    defenses: { creatureType: sources.species?.creatureTypeProjection !== undefined ? available(sources.species.creatureTypeProjection.value) : typeof sources.species?.creatureType?.value === 'string' ? available(sources.species.creatureType.value) : missing('Creature type is unavailable from the species source.'), resistances: resistanceRows },
-    savingThrowNotes: (sources.species?.savingThrowNotes ?? []).map((note) => ({ text: note.text, source: note.source.name })),
-    senses: projectSenses(sources.species, skills),
+    defenses: { resistances: resistanceRows },
+    savingThrowNotes: eligibleSpeciesFeatures.flatMap((feature) => feature.savingThrowNotes ?? []).map((note) => ({ text: note.text, source: note.source.name })),
+    senses: projectSenses(sources.species, skills, passiveEffects.contributions),
     training: projectTraining(selectors, sources),
     inventory,
     spells,
@@ -266,6 +297,7 @@ function skillRow(skill: typeof SKILLS[number], results: AbilityScoreResults | u
 interface SelectorGroups { armor: Set<string>; weapons: Set<string>; tools: Set<string>; languages: Set<string>; saves: Set<string>; skills: Set<string>; expertise: Set<string>; }
 
 function collectSelectors(document: CharacterDocument, sources: CharacterSheetSources): SelectorGroups {
+  const classProficiencies = getEligibleClassProficiencies(document, sources.class);
   const classProgression = document.classProgressions?.find((entry) => entry.class.sourcePath === sources.class?.source.sourcePath);
   const activeClassAdvancements = new Map((sources.class?.advancements ?? [])
     .filter((advancement) => advancement.level <= (classProgression?.targetLevel ?? 0) && (advancement.classRestriction === undefined || advancement.classRestriction === 'primary'))
@@ -277,12 +309,12 @@ function collectSelectors(document: CharacterDocument, sources: CharacterSheetSo
     return configuration?.mode === 'expertise' ? [] : selection.selected;
   }) ?? [];
   const values = [
-    ...(sources.class?.proficiencies?.armor ?? []),
-    ...(sources.class?.proficiencies?.weapons ?? []),
-    ...(sources.class?.proficiencies?.tools ?? []),
-    ...(sources.class?.proficiencies?.languages ?? []),
-    ...(sources.class?.proficiencies?.savingThrows ?? []),
-    ...(sources.class?.proficiencies?.skills ?? []),
+    ...(classProficiencies?.armor ?? []),
+    ...(classProficiencies?.weapons ?? []),
+    ...(classProficiencies?.tools ?? []),
+    ...(classProficiencies?.languages ?? []),
+    ...(classProficiencies?.savingThrows ?? []),
+    ...(classProficiencies?.skills ?? []),
     ...(sources.background?.tools ?? []),
     ...(sources.background?.languages ?? []),
     ...(sources.background?.skills ?? []),
@@ -322,20 +354,47 @@ function normalizeAbility(value: string): string {
   return aliases[value] ?? value;
 }
 
-function projectSenses(species: SpeciesSourceSummary | undefined, skills: CharacterSheetProjection['skills']): CharacterSheetProjection['senses'] {
+function projectSenses(species: SpeciesSourceSummary | undefined, skills: CharacterSheetProjection['skills'], effects: PassiveEffectContribution[]): CharacterSheetProjection['senses'] {
   const entries: CharacterSheetProjection['senses'] = [];
   const senses = species?.senses;
   const units = typeof senses?.units === 'string' ? senses.units : undefined;
+  const numericSenses = new Map<string, number>();
+  for (const key of ['darkvision', 'truesight']) {
+    const value = senses?.[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) numericSenses.set(key, value);
+  }
+  for (const effect of effects) {
+    if (effect.target === 'sense-darkvision') numericSenses.set('darkvision', Math.max(numericSenses.get('darkvision') ?? 0, effect.value));
+    else if (effect.target === 'sense-truesight') numericSenses.set('truesight', Math.max(numericSenses.get('truesight') ?? 0, effect.value));
+  }
   if (senses !== undefined) for (const [key, value] of Object.entries(senses)) {
     if (key === 'units' || value === null || value === undefined || value === false || value === '') continue;
+    if (key === 'darkvision' || key === 'truesight') continue;
     entries.push({ label: humanize(key), value: available(`${String(value)}${typeof value === 'number' && units ? ` ${formatUnits(units)}` : ''}`) });
   }
+  for (const [key, value] of numericSenses) entries.push({ label: humanize(key), value: available(`${value}${units ? ` ${formatUnits(units)}` : ''}`) });
   entries.push(
     { label: 'Passive perception', value: passiveSkill(skills, 'prc') },
     { label: 'Passive investigation', value: passiveSkill(skills, 'inv') },
     { label: 'Passive insight', value: passiveSkill(skills, 'ins') },
   );
   return entries;
+}
+
+function projectInitiative(results: AbilityScoreResults | undefined, proficiency: SheetValue<number>, effects: PassiveEffectContribution[]): SheetValue<number> {
+  if (results === undefined) return missing('Initiative requires complete ability-score sources.');
+  const hasProficiency = effects.some((effect) => effect.target === 'initiative-proficiency');
+  return available(results.dex.modifier + (hasProficiency && proficiency.kind === 'available' ? proficiency.value : 0));
+}
+
+function passiveSkillBonuses(effects: PassiveEffectContribution[], results: AbilityScoreResults | undefined): Map<string, number> {
+  const bonuses = new Map<string, number>();
+  if (results === undefined) return bonuses;
+  for (const effect of effects) if (effect.target === 'skill-check-bonus') {
+    const bonus = Math.max(effect.value.minimum, results[effect.value.ability].modifier);
+    bonuses.set(effect.value.skill, (bonuses.get(effect.value.skill) ?? 0) + bonus);
+  }
+  return bonuses;
 }
 
 function passiveSkill(skills: CharacterSheetProjection['skills'], key: string): SheetValue<number> {
@@ -349,7 +408,7 @@ function projectTraining(selectors: SelectorGroups, sources: CharacterSheetSourc
   const complete = sources.class !== undefined && sources.background !== undefined && sources.species !== undefined;
   const values = (category: 'armor' | 'weapon' | 'tool' | 'languages', keys: Set<string>): SheetValue<string[]> => {
     if (!complete) return missing('Complete proficiency sources are required.');
-    return available([...keys].map((key) => trainingLabel(category, key, sources.toolLabels)).sort((left, right) => left.localeCompare(right)));
+    return available([...new Set([...keys].map((key) => trainingLabel(category, key, sources.toolLabels, sources.weaponLabels)))].sort((left, right) => left.localeCompare(right)));
   };
   return [
     { label: 'Armor', values: values('armor', selectors.armor) },
@@ -359,8 +418,10 @@ function projectTraining(selectors: SelectorGroups, sources: CharacterSheetSourc
   ];
 }
 
-function trainingLabel(category: string, key: string, toolLabels?: ReadonlyMap<string, string>): string {
+function trainingLabel(category: string, key: string, toolLabels?: ReadonlyMap<string, string>, weaponLabels?: ReadonlyMap<string, string>): string {
+  if (category === 'weapon') return weaponLabels?.get(`weapon:${key}`) ?? TRAINING_LABELS[`weapon:${key}`] ?? humanize(key.split(':').at(-1) ?? key);
   if (category === 'tool') return TRAINING_LABELS[`tool:${key}`] ?? toolLabels?.get(`tool:${key}`) ?? humanize(key.split(':').at(-1) ?? key);
+  if (category === 'languages') return languageSelectorLabel(`languages:${key}`) ?? humanize(key.split(':').at(-1) ?? key);
   return TRAINING_LABELS[`${category}:${key}`] ?? humanize(key.split(':').at(-1) ?? key);
 }
 

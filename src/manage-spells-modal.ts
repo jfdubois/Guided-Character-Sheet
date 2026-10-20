@@ -36,9 +36,10 @@ export class ManageSpellsModal extends Modal {
 
   onOpen(): void {
     this.titleEl.setText('Manage spells');
-    const search = this.contentEl.createEl('input', { type: 'search', placeholder: 'Search spells', attr: { 'aria-label': 'Search spells' } });
+    const searchControls = this.contentEl.createDiv({ cls: 'guided-character-sheet__manage-search' });
+    const search = searchControls.createEl('input', { type: 'search', placeholder: 'Search spells', attr: { 'aria-label': 'Search spells' } });
     search.addEventListener('input', () => { this.query = search.value; void this.renderResults(); });
-    const level = this.contentEl.createEl('select', { cls: 'guided-character-sheet__manage-spells-level', attr: { 'aria-label': 'Spell level' } });
+    const level = searchControls.createEl('select', { attr: { 'aria-label': 'Spell level' } });
     const levels: Array<[string, string]> = [['', 'All levels'], ['0', 'Cantrips'], ...Array.from({ length: 9 }, (_value, index): [string, string] => [String(index + 1), `${index + 1}${ordinalSuffix(index + 1)} level`])];
     for (const [value, label] of levels) level.createEl('option', { value, text: label });
     level.addEventListener('change', () => { this.level = level.value === '' ? undefined : Number(level.value); void this.renderResults(); });
@@ -71,7 +72,7 @@ export class ManageSpellsModal extends Modal {
       this.managedEl.createDiv({ text: 'No spells selected.', cls: 'guided-character-sheet__manage-spells-empty' });
       return;
     }
-    for (const [key, spell] of entries) {
+    for (const [key, spell] of [...entries].sort(([leftKey, left], [rightKey, right]) => (left.name || left.id).localeCompare(right.name || right.id) || leftKey.localeCompare(rightKey))) {
       const row = this.managedEl.createDiv({ cls: 'guided-character-sheet__manage-spells-row' });
       const label = row.createDiv({ cls: 'guided-character-sheet__manage-spells-label' });
       label.createSpan({ text: spell.name || spell.id });
@@ -107,7 +108,7 @@ export class ManageSpellsModal extends Modal {
       this.resultsEl.createDiv({ text: 'No matching spells.', cls: 'guided-character-sheet__manage-spells-empty' });
       return;
     }
-    for (const spell of results.slice(0, MAX_RESULTS)) {
+    for (const spell of [...results].sort((left, right) => left.name.localeCompare(right.name) || referenceKey(left).localeCompare(referenceKey(right))).slice(0, MAX_RESULTS)) {
       const row = this.resultsEl.createDiv({ cls: 'guided-character-sheet__manage-spells-result' });
       const details = row.createDiv({ cls: 'guided-character-sheet__manage-spells-details' });
       details.createSpan({ text: spell.name });

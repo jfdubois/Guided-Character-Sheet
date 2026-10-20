@@ -1,11 +1,13 @@
 import type { CharacterDocument } from './character-model';
-import type { BackgroundFeatureSummary, BackgroundSourceSummary, ClassFeatureSummary, ClassSourceSummary, SpeciesFeatureSummary, SpeciesSourceSummary } from './character-sources';
+import type { BackgroundFeatureSummary, BackgroundSourceSummary, ClassFeatureSummary, ClassSourceSummary, GrantedFeatSourceSummary, SpeciesFeatureSummary, SpeciesSourceSummary } from './character-sources';
 import type { FoundrySourceReference } from './foundry-source-catalog';
 import type { FoundryActivitySummary, FoundryUsesSummary } from './foundry-activity-summary';
 import type { SheetValue } from './character-sheet-model';
-import { getLevelOneClassProgression } from './level-one-progression';
 import { recoverableResetForUses } from './resource-period';
 import { resolveFeatureDamagePart, resolveFeatureScaleLookup } from './feature-damage-resolver';
+import { getEligibleSpeciesFeatures, totalCharacterLevel } from './species-feature-eligibility';
+import { proficiencyBonusForLevel } from './proficiency-bonus';
+import { getEligibleClassFeatures, getEligibleClassScales } from './class-feature-eligibility';
 
 export type FeatureSheetCategory = 'class' | 'species' | 'background' | 'feats';
 
@@ -47,6 +49,7 @@ export interface FeatureSheetSources {
   class?: ClassSourceSummary;
   species?: SpeciesSourceSummary;
   background?: BackgroundSourceSummary;
+  selectedFeatSummaries?: ReadonlyMap<string, GrantedFeatSourceSummary | null>;
 }
 
 /** Stable key for a feature-level mutable resource. */
@@ -56,7 +59,7 @@ export function featureActivityResourceKey(sourcePath: string, activityId: strin
 
 export function projectFeatureSheet(document: CharacterDocument, sources: FeatureSheetSources): FeatureSheetProjection {
   const warnings: string[] = [];
-  const proficiencyBonus = sources.class === undefined ? undefined : getLevelOneClassProgression(sources.class).proficiencyBonus;
+  const proficiencyBonus = sources.class === undefined ? undefined : proficiencyBonusForLevel(totalCharacterLevel(document));
   const groups: FeatureSheetGroup[] = [
     { category: 'class', label: 'Class features', entries: [] },
     { category: 'species', label: 'Species traits', entries: [] },
@@ -65,17 +68,22 @@ export function projectFeatureSheet(document: CharacterDocument, sources: Featur
   ];
   const entries = new Map<string, FeatureSheetEntry>();
   const classProgression = document.classProgressions?.find((progression) => progression.class.sourcePath === sources.class?.source.sourcePath);
+  const eligibleClassAdvancementIds = new Set((sources.class?.advancements ?? [])
+    .filter((advancement) => classProgression !== undefined && advancement.level <= classProgression.targetLevel && (advancement.classRestriction === undefined || advancement.classRestriction === 'primary'))
+    .map((advancement) => advancement.id));
+  const eligibleClassFeatures = getEligibleClassFeatures(document, sources.class);
+  const eligibleClassScales = getEligibleClassScales(document, sources.class);
   const resolveFeatureDescription = (category: FeatureSheetCategory, description: string | undefined): string | undefined => {
     if (description === undefined || category !== 'class') return description;
     const context = {
       classIdentifier: classProgression?.class.identifier ?? '',
       targetLevel: classProgression?.targetLevel ?? 0,
-      scales: sources.class?.scales ?? [],
+      scales: eligibleClassScales,
     };
     return description.replace(/\[\[lookup\s+(@scale\.[^.\s]+\.[^.\s]+)\]\]/g, (token, reference: string) => {
       const value = resolveFeatureScaleLookup(reference, context).value;
       if (value === undefined) return token;
-      if (value.type === 'number') return String(value.value);
+      if (value.type === 'number' || value.type === 'cr') return String(value.value);
       if (value.type === 'dice') return `${value.number === null ? '' : value.number}d${value.faces}${value.modifiers.join('')}`;
       return `${value.value} ${value.units}`;
     });
@@ -91,7 +99,7 @@ export function projectFeatureSheet(document: CharacterDocument, sources: Featur
       }, {
         classIdentifier: classProgression?.class.identifier ?? '',
         targetLevel: scaleOwner(part.customFormula!) === sources.species?.source.identifier ? totalCharacterLevel(document) ?? 0 : classProgression?.targetLevel ?? 0,
-        scales: sources.class?.scales ?? [],
+        scales: eligibleClassScales,
         speciesIdentifier: sources.species?.source.identifier,
         speciesScales: sources.species?.scales ?? [],
       }));
@@ -115,6 +123,7 @@ export function projectFeatureSheet(document: CharacterDocument, sources: Featur
       if (!existing.origins.includes(origin)) existing.origins.push(origin);
       const description = resolveFeatureDescription(category, details.description);
       if (description !== undefined && existing.description.kind === 'missing') existing.description = available(description);
+      else if (details.descriptionUnavailableReason !== undefined && existing.description.kind === 'missing') existing.description = missing(details.descriptionUnavailableReason);
       if (details.activities !== undefined && existing.activities.length === 0) {
         const projected = projectActivities(details.activities, source.sourcePath, category, details.uses);
         existing.activities = projected.activities;
@@ -126,7 +135,7 @@ export function projectFeatureSheet(document: CharacterDocument, sources: Featur
     const description = resolveFeatureDescription(category, details.description);
     const entry: FeatureSheetEntry = {
       key, name: source.name, category, ...(featureLevel === undefined ? {} : { level: featureLevel }), source: available(source), origins: [origin],
-      description: description === undefined ? missing('Feature description is unavailable.') : available(description),
+      description: description === undefined ? missing(details.descriptionUnavailableReason ?? 'Feature description is unavailable.') : available(description),
       activities: projected.activities, resource: projectResource(document, featureResourceKey(source.sourcePath), details.uses, proficiencyBonus), diagnostics: [...(details.activityDiagnostics ?? []), ...projected.diagnostics],
     };
     entries.set(key, entry);
@@ -134,31 +143,40 @@ export function projectFeatureSheet(document: CharacterDocument, sources: Featur
   };
 
   if (sources.class === undefined) warnings.push('Class feature source is unavailable.');
-  else for (const feature of sources.class.features ?? []) if (classProgression === undefined || feature.level <= classProgression.targetLevel) add('class', feature.source, feature, 'Class', feature.level);
+  else for (const feature of eligibleClassFeatures) add('class', feature.source, feature, 'Class', feature.level);
   if (sources.species === undefined) warnings.push('Species feature source is unavailable.');
   else {
-    warnings.push(...(sources.species.effectDiagnostics ?? []));
-    for (const feature of sources.species.features ?? []) if (isSpeciesFeatureEntitled(document, feature)) add('species', feature.source, feature, 'Species', feature.level);
+    for (const feature of getEligibleSpeciesFeatures(document, sources.species)) {
+      warnings.push(...(feature.effectDiagnostics ?? []));
+      add('species', feature.source, feature, 'Species', feature.level);
+    }
   }
   if (sources.background === undefined) warnings.push('Background feature source is unavailable.');
   else {
     for (const feature of sources.background.features ?? []) add('background', feature.source, feature, 'Background');
-    if (sources.background.feat !== undefined) add('feats', sources.background.feat, {}, 'Background');
+    const grantedFeats = sources.background.grantedFeats ?? (sources.background.grantedFeat === undefined ? [] : [sources.background.grantedFeat]);
+    for (const feat of grantedFeats) add('feats', feat.source, { description: feat.description }, 'Background');
+    if (grantedFeats.length === 0 && sources.background.feat !== undefined) add('feats', sources.background.feat, {}, 'Background');
   }
-  for (const progression of document.classProgressions ?? []) for (const selection of progression.selections) {
-    if (selection.kind === 'ability-score' && selection.feat !== undefined) add('feats', selection.feat, {}, 'Class');
-    if (selection.kind === 'item') for (const selected of selection.selected) if (selected.type === 'feat') add('feats', selected, {}, 'Class');
+  if (sources.background === undefined && document.backgroundChoices?.grantedFeat !== undefined) {
+    const savedFeat = document.backgroundChoices.grantedFeat.feat;
+    add('feats', savedFeat, { descriptionUnavailableReason: 'Feat source is unavailable.' }, 'Background');
+  }
+  for (const selection of classProgression?.selections ?? []) {
+    if (!eligibleClassAdvancementIds.has(selection.advancementId)) continue;
+    if (selection.kind === 'ability-score' && selection.feat !== undefined) addSelectedFeat(selection.feat, 'Class');
+    if (selection.kind === 'item') for (const selected of selection.selected) if (selected.type === 'feat') addSelectedFeat(selected, 'Class');
   }
   groups.forEach((group) => group.entries.sort((left, right) => left.source.kind === 'available' && right.source.kind === 'available' ? left.source.value.sourcePath.localeCompare(right.source.value.sourcePath) || left.name.localeCompare(right.name) : left.name.localeCompare(right.name)));
   return { groups, warnings };
+
+  function addSelectedFeat(source: FoundrySourceReference, origin: string): void {
+    const summary = sources.selectedFeatSummaries?.get(sourceKey(source));
+    add('feats', summary?.source ?? source, { description: summary?.description, ...(summary === null ? { descriptionUnavailableReason: 'Feat source is unavailable.' } : {}) }, origin);
+  }
 }
 
-interface FeatureDetails { description?: string; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; }
-
-function totalCharacterLevel(document: CharacterDocument): number | undefined {
-  const progressions = document.classProgressions ?? [];
-  return progressions.length === 0 ? undefined : progressions.reduce((total, progression) => total + progression.targetLevel, 0);
-}
+interface FeatureDetails { description?: string; descriptionUnavailableReason?: string; activities?: FoundryActivitySummary[]; activityDiagnostics?: string[]; uses?: FoundryUsesSummary; }
 
 function speciesDamageTypes(document: CharacterDocument, inherited: string[]): string[] {
   const selected = document.speciesConfiguration?.choices.flatMap((choice) => choice.selected).find((value) => value.startsWith('dr:'))?.slice(3);
@@ -169,20 +187,6 @@ function speciesDamageTypes(document: CharacterDocument, inherited: string[]): s
 
 function scaleOwner(formula: string): string | undefined {
   return /^@scale\.([^\.\s]+)\./.exec(formula)?.[1];
-}
-
-function isSpeciesFeatureEntitled(document: CharacterDocument, feature: SpeciesFeatureSummary): boolean {
-  const level = totalCharacterLevel(document);
-  if (level !== undefined && feature.level > level) return false;
-  const configuration = document.speciesConfiguration;
-  if (configuration === undefined) return true;
-  if (feature.selection !== undefined) {
-    const { key, value } = feature.selection;
-    return configuration.choices.some((choice) => choice.key === key && choice.selected.includes(value));
-  }
-  if (feature.automatic === true) return true;
-  if (configuration.grants.some((grant) => grant.source.id === feature.source.id && grant.source.type === feature.source.type)) return true;
-  return false;
 }
 
 function projectResource(document: CharacterDocument, key: string, uses: FoundryUsesSummary | undefined, proficiencyBonus: number | undefined): FeatureSheetResource | undefined {

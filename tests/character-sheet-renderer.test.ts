@@ -10,6 +10,7 @@ const completeSheet: CharacterSheetProjection = {
     name: 'Ayla',
     ruleset: '2024',
     species: available('Elf'),
+    creatureType: available('Humanoid'),
     className: available('Fighter'),
     level: available(1),
     background: available('Soldier'),
@@ -66,6 +67,26 @@ const completeSheet: CharacterSheetProjection = {
 };
 
 describe('read-only character sheet renderer', () => {
+  it('opens inventory management from the inventory section', () => {
+    const rendered = createSheetTestRoot();
+    const manage = vi.fn();
+    renderCharacterSheet(rendered.root, completeSheet, { characters: [], selectedFilePath: 'Ayla.json', selectedSection: 'inventory', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(), onManageItems: manage });
+    const control = rendered.controls.find(({ text }) => text === 'Manage items');
+    expect(control?.disabled).toBe(false);
+    control?.dispatch('click');
+    expect(manage).toHaveBeenCalledOnce();
+  });
+
+  it('counts only class-owned cantrips against class cantrip capacity', () => {
+    const rendered = createSheetTestRoot();
+    const sheet = structuredClone(completeSheet);
+    const cantrip = (name: string, ownership: string[]) => ({ name, level: 0, source: missing(`${name} source unavailable.`), prepared: available(true), ownership });
+    sheet.spells = { kind: 'available', castingAbility: available('Intelligence'), spellModifier: available(3), spellAttack: available(5), saveDc: available(13), cantripCapacity: 3, cantrips: [cantrip('Fire Bolt', ['cantrips-known']), cantrip('Mage Hand', ['cantrips-known']), cantrip('Prestidigitation', ['cantrips-known']), cantrip('Druidcraft', ['species-granted'])], levels: [], unresolvedSpells: [], freeUses: [], warnings: [] };
+    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'spells', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+    expect(rendered.text).toContain('Cantrips (3/3)');
+    expect(rendered.text).not.toContain('Cantrips (4/3)');
+  });
+
   it('renders available hit points as an accessible adjustment button', () => {
     const rendered = createSheetTestRoot();
     const onAdjust = vi.fn();
@@ -180,6 +201,20 @@ describe('read-only character sheet renderer', () => {
     ]));
   });
 
+  it('enables the rest control only when a handler is available', () => {
+    const rendered = createSheetTestRoot();
+    const onRest = vi.fn();
+    renderCharacterSheet(rendered.root, completeSheet, {
+      characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }],
+      selectedFilePath: 'Characters/ayla.json', selectedSection: 'abilities',
+      onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(), onRest,
+    });
+    const control = rendered.control('Rest');
+    expect(control.disabled).toBe(false);
+    control.dispatch('click');
+    expect(onRest).toHaveBeenCalledOnce();
+  });
+
   it('renders saving throw markers, conditional notes, and defense sources accessibly', () => {
     const rendered = createSheetTestRoot();
     const sheet: CharacterSheetProjection = {
@@ -188,18 +223,21 @@ describe('read-only character sheet renderer', () => {
         { ability: 'int', label: 'Intelligence', proficient: available(false), modifier: available(1), annotations: [{ marker: 'A', source: 'Gnomish Cunning' }, { marker: 'D', source: 'Test condition' }] },
       ],
       savingThrowNotes: [{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: 'Dwarven Resilience' }],
-      defenses: { creatureType: available('humanoid'), resistances: [{ damageType: 'poison', source: 'Dwarven Resilience' }, { damageType: 'acid', source: 'Draconic Ancestry' }] },
+      defenses: { resistances: [{ damageType: 'poison', source: 'Dwarven Resilience' }, { damageType: 'acid', source: 'Draconic Ancestry' }] },
     };
     renderCharacterSheet(rendered.root, sheet, {
       characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'abilities',
       onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(),
     });
 
-    expect(rendered.text).toEqual(expect.arrayContaining(['A', 'D', 'Advantage on saving throws to avoid or end the Poisoned condition.', 'humanoid', 'poison, acid']));
+    expect(rendered.text).toEqual(expect.arrayContaining(['A', 'D', 'Advantage on saving throws to avoid or end the Poisoned condition.', 'poison, acid']));
     expect(rendered.ariaLabels).toEqual(expect.arrayContaining([
       'Advantage on Intelligence saving throw from Gnomish Cunning',
       'Disadvantage on Intelligence saving throw from Test condition',
     ]));
+    expect(rendered.text.filter((text) => text === 'Humanoid')).toHaveLength(0);
+    expect(rendered.text.some((text) => text.includes('Humanoid'))).toBe(true);
+    expect(rendered.ariaLabels.some((label) => label.includes('Creature type: Humanoid'))).toBe(true);
     expect(rendered.classText['guided-character-sheet__visually-hidden']).toEqual(expect.arrayContaining([
       'poison: Dwarven Resilience', 'acid: Draconic Ancestry', ' Source: Dwarven Resilience',
     ]));
@@ -234,7 +272,7 @@ describe('read-only character sheet renderer', () => {
       onSectionChange: vi.fn(),
     });
 
-    expect(rendered.ariaLabels).toContain('Character details: Species: Species has not been selected. Class: Class has not been selected. Level: 1. Background: Soldier.');
+    expect(rendered.ariaLabels).toContain('Character details: Species: Species has not been selected. Creature type: Humanoid. Class: Class has not been selected. Level: 1. Background: Soldier.');
   });
 
   it('routes character, edit, and section interactions only through callbacks', () => {
@@ -292,6 +330,34 @@ describe('read-only character sheet renderer', () => {
     expect(rendered.ariaLabels.some((label) => label.includes('Travel journal') && label.includes('prototype'))).toBe(false);
     expect(rendered.classText['guided-character-sheet__visually-hidden']).toContain('Travel journal weight: Item weight is unavailable for Travel journal.');
     expect(rendered.headingOrder).not.toContain('Saving throws');
+  });
+
+  it('opens currency management from the inventory summary', () => {
+    const rendered = createSheetTestRoot();
+    const onManageCurrency = vi.fn();
+    renderCharacterSheet(rendered.root, completeSheet, {
+      characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }],
+      selectedFilePath: 'Characters/ayla.json', selectedSection: 'inventory',
+      onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(), onManageCurrency,
+    });
+
+    expect(rendered.text).toContain('12 GP');
+    rendered.control('Manage currency').dispatch('click');
+    expect(onManageCurrency).toHaveBeenCalledOnce();
+  });
+
+  it('lists carried coins from highest to lowest value regardless of object key order', () => {
+    const rendered = createSheetTestRoot();
+    const sheet = structuredClone(completeSheet);
+    if (sheet.inventory.kind !== 'available') throw new Error('Expected available inventory fixture');
+    sheet.inventory.currency = { cp: 5, sp: 4, ep: 3, gp: 2, pp: 1 };
+    renderCharacterSheet(rendered.root, sheet, {
+      characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }],
+      selectedFilePath: 'Characters/ayla.json', selectedSection: 'inventory',
+      onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(),
+    });
+
+    expect(rendered.text).toContain('1 PP, 2 GP, 3 EP, 4 SP, 5 CP');
   });
 
   it('emits equipment toggles for active equip controls', () => {
@@ -389,6 +455,16 @@ describe('read-only character sheet renderer', () => {
     expect(rendered.classText['guided-character-sheet__sheet-subtitle']).not.toContain('Damage');
   });
 
+  it('renders weapon property and mastery names beside the action and descriptions once at the end', () => {
+    const rendered = createSheetTestRoot();
+    const sheet: CharacterSheetProjection = { ...completeSheet, actions: { groups: [{ key: 'attacks', label: 'Attacks', entries: [{ name: 'Shortsword', source: 'Shortsword', executable: false, attackBonus: available(5), weaponProperties: ['Finesse', 'Light'], weaponMastery: 'Vex', diagnostics: [] }] }], combatReference: [], weaponReferences: [{ name: 'Finesse', description: 'Choose an ability.' }, { name: 'Light', description: 'Extra attack.' }, { name: 'Vex', description: 'Gain advantage.' }], warnings: [] } };
+    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'actions', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+    expect(rendered.classText['guided-character-sheet__sheet-subtitle']).toContain('Finesse, Light · Mastery: Vex');
+    expect(rendered.text.filter((value) => value === 'Finesse')).toHaveLength(1);
+    expect(rendered.text.filter((value) => value === 'Vex')).toHaveLength(1);
+    expect(rendered.text).toEqual(expect.arrayContaining(['Weapon properties and masteries', 'Choose an ability.', 'Extra attack.', 'Gain advantage.']));
+  });
+
   it('renders remaining sections as read-only accessible previews', () => {
     const rendered = createSheetTestRoot();
     const sheet = structuredClone(completeSheet);
@@ -406,16 +482,15 @@ describe('read-only character sheet renderer', () => {
     expect(rendered.text).not.toContain('1 available');
     expect(rendered.text).not.toContain('Not implemented yet');
     const inputs = rendered.controls.filter((control) => control.tag === 'input' && control.type === 'checkbox');
-    expect(inputs).toHaveLength(6);
+    expect(inputs).toHaveLength(5);
     expect(inputs.every((control) => control.disabled && control.handlers.size === 0)).toBe(true);
-    expect(inputs.filter((control) => control.checked)).toHaveLength(1);
+    expect(inputs.filter((control) => control.checked)).toHaveLength(0);
     const checkbox = (label: string): TestControl => {
       const control = inputs.find((candidate) => candidate.ariaLabel === label);
       if (control === undefined) throw new Error(`Missing checkbox ${label}`);
       return control;
     };
-    expect(checkbox('Light prepared: Spell source is unavailable.')).toMatchObject({ checked: true, disabled: true });
-    expect(checkbox('Light prepared: Spell source is unavailable.').handlers.size).toBe(0);
+    expect(inputs.some((control) => control.ariaLabel.startsWith('Light prepared'))).toBe(false);
     for (const label of ['Use 1st-level spell slot 1: Slot expenditure is not persisted.', 'Use 1st-level spell slot 2: Slot expenditure is not persisted.', 'Ward use 1: unavailable: Free-use expenditure is not persisted.']) {
       expect(checkbox(label).checked).toBe(false);
       expect(checkbox(label).disabled).toBe(true);
@@ -483,19 +558,20 @@ describe('read-only character sheet renderer', () => {
     expect(rendered.classes).toContain('guided-character-sheet__spell-primary--without-prep');
   });
 
-  it('retains the Prep column for a mixed subsection', () => {
+  it('omits cantrip preparation controls for every source mode', () => {
     const rendered = createSheetTestRoot();
     const sheet = structuredClone(completeSheet);
     const light = { sourcePath: 'packs/_source/spells24/cantrips/light.yml', pack: 'dnd5e.spells24', type: 'spell' as const, id: 'light', name: 'Light', ruleset: '2024' as const, level: 0, spellLists: ['wizard'], ritual: false, preparation: 'always' };
     const fireBolt = { ...light, sourcePath: 'packs/_source/spells24/cantrips/fire-bolt.yml', id: 'fire-bolt', name: 'Fire Bolt', preparation: 'prepared' as const };
-    sheet.spells = { kind: 'available', castingAbility: available('Intelligence'), spellModifier: available(3), spellAttack: available(5), saveDc: available(13), cantrips: [light, fireBolt].map((source) => ({ name: source.name, level: 0, source: available(source), prepared: available(true), ownership: ['cantrips-known'] })), levels: [], unresolvedSpells: [], freeUses: [], warnings: [] };
-    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'spells', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+    const rayOfFrost = { ...light, sourcePath: 'packs/_source/spells24/cantrips/ray-of-frost.yml', id: 'ray-of-frost', name: 'Ray of Frost', preparation: undefined };
+    sheet.spells = { kind: 'available', castingAbility: available('Intelligence'), spellModifier: available(3), spellAttack: available(5), saveDc: available(13), cantrips: [light, fireBolt, rayOfFrost].map((source) => ({ name: source.name, level: 0, source: available(source), prepared: available(true), ownership: ['cantrips-known'] })), levels: [], unresolvedSpells: [], freeUses: [], warnings: [] };
+    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'spells', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn(), onToggleSpellPreparation: vi.fn() });
 
-    expect(rendered.text).toContain('Prep');
-    expect(rendered.classes).toContain('guided-character-sheet__spell-column-headings');
-    expect(rendered.classes).toContain('guided-character-sheet__spell-prep-heading');
-    expect(rendered.classes).toContain('guided-character-sheet__spell-prep-spacer');
-    expect(rendered.classes).not.toContain('guided-character-sheet__spell-primary--without-prep');
+    expect(rendered.text).not.toContain('Prep');
+    expect(rendered.classes).not.toContain('guided-character-sheet__spell-column-headings');
+    expect(rendered.classes).not.toContain('guided-character-sheet__spell-prep');
+    expect(rendered.classes).toContain('guided-character-sheet__spell-primary--without-prep');
+    expect(rendered.controls.filter((control) => control.ariaLabel.endsWith(' prepared'))).toEqual([]);
   });
 
   it('renders usable spell management and preparation controls with blocked-state context', () => {

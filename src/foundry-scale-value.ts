@@ -2,12 +2,13 @@ import { isRecord } from './foundry-utils';
 
 export type FoundryScaleValue =
   | { type: 'number'; value: number }
+  | { type: 'cr'; value: number }
   | { type: 'dice'; number: number | null; faces: number; modifiers: string[] }
   | { type: 'distance'; value: number; units: string };
 
 export function readFoundryScaleValue(type: unknown, raw: unknown, distanceUnits?: unknown): FoundryScaleValue | undefined {
   if (!isRecord(raw)) return undefined;
-  if (type === 'number' && typeof raw.value === 'number' && Number.isFinite(raw.value)) {
+  if ((type === 'number' || type === 'cr') && typeof raw.value === 'number' && Number.isFinite(raw.value) && (type !== 'cr' || raw.value >= 0)) {
     return { type, value: raw.value };
   }
   const diceNumber = raw.number;

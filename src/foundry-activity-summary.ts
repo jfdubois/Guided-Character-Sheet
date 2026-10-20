@@ -2,7 +2,7 @@ import { isRecord } from './foundry-utils';
 
 export interface FoundryUsesSummary {
   maximum?: string | number;
-  recovery: Array<{ period: string; type?: string }>;
+  recovery: Array<{ period: string; type?: string; formula?: string }>;
 }
 
 export interface FoundryDamagePartSummary {
@@ -37,7 +37,8 @@ function readUses(value: unknown, path?: string, diagnostics?: string[]): Foundr
     if (!isRecord(entry)) { diagnostics?.push(`${path}.recovery[${index}] must be an object`); return []; }
     if (typeof entry.period !== 'string') { diagnostics?.push(`${path}.recovery[${index}].period must be a string`); return []; }
     if (entry.type !== undefined && typeof entry.type !== 'string') diagnostics?.push(`${path}.recovery[${index}].type must be a string`);
-    return [{ period: entry.period, ...(typeof entry.type === 'string' ? { type: entry.type } : {}) }];
+    if (entry.formula !== undefined && typeof entry.formula !== 'string') diagnostics?.push(`${path}.recovery[${index}].formula must be a string`);
+    return [{ period: entry.period, ...(typeof entry.type === 'string' ? { type: entry.type } : {}), ...(typeof entry.formula === 'string' ? { formula: entry.formula } : {}) }];
   }) : (diagnostics?.push(`${path}.recovery must be an array`), []);
   const maximum = value.max === undefined || value.max === null || value.max === '' ? undefined : typeof value.max === 'string' || typeof value.max === 'number' ? value.max : (diagnostics?.push(`${path}.max must be a string or number`), undefined);
   if (maximum === undefined && recovery.length === 0) return undefined;
@@ -115,7 +116,16 @@ export function readFoundryActivities(system: Record<string, unknown>): { activi
     const targetRaw = isRecord(raw.target) ? raw.target : undefined;
     const templateRaw = targetRaw && isRecord(targetRaw.template) ? targetRaw.template : undefined;
     const affectsRaw = targetRaw && isRecord(targetRaw.affects) ? targetRaw.affects : undefined;
-    const target = templateRaw || affectsRaw ? { ...(affectsRaw && typeof affectsRaw.type === 'string' ? { affects: { type: affectsRaw.type } } : {}), ...(templateRaw ? { template: { ...(typeof templateRaw.type === 'string' ? { type: templateRaw.type } : {}), ...(typeof templateRaw.size === 'string' || typeof templateRaw.size === 'number' ? { size: templateRaw.size } : {}), ...(typeof templateRaw.width === 'string' || typeof templateRaw.width === 'number' ? { width: templateRaw.width } : {}), ...(typeof templateRaw.units === 'string' ? { units: templateRaw.units } : {}) } } : {}) } : undefined;
+    const template = templateRaw === undefined ? undefined : {
+      ...(text(templateRaw.type) ? { type: text(templateRaw.type) } : {}),
+      ...(typeof templateRaw.size === 'number' ? { size: templateRaw.size } : text(templateRaw.size) ? { size: text(templateRaw.size) } : {}),
+      ...(typeof templateRaw.width === 'number' ? { width: templateRaw.width } : text(templateRaw.width) ? { width: text(templateRaw.width) } : {}),
+      ...(text(templateRaw.units) ? { units: text(templateRaw.units) } : {}),
+    };
+    const affectsType = text(affectsRaw?.type);
+    const target = affectsType !== undefined || template !== undefined && Object.keys(template).length > 0
+      ? { ...(affectsType === undefined ? {} : { affects: { type: affectsType } }), ...(template === undefined || Object.keys(template).length === 0 ? {} : { template }) }
+      : undefined;
     const saveRaw = isRecord(raw.save) ? raw.save : undefined;
     const saveAbility = saveRaw === undefined ? undefined : Array.isArray(saveRaw.ability)
       ? saveRaw.ability.filter((value): value is string => typeof value === 'string')

@@ -14,6 +14,12 @@ const speciesSource = { source: { sourcePath: 'packs/_source/origins24/species/e
 const document: CharacterDocument = { format: 1, kind: 'guided-character', name: 'Ayla', ruleset: '2024', step: 'background', foundry: { systemVersion: '6', sourceBranch: '6', sourceCommit: 'a'.repeat(40) }, classProgressions: [{ class: { sourcePath: classSource.source.sourcePath, identifier: 'wizard', id: 'wizard' }, targetLevel: 1, selections: [] }] };
 
 describe('spell sheet projection', () => {
+  it('adds an eligible cantrip contribution to the authoritative class capacity', () => {
+    const classWithCapacity = { ...classSource, spellcasting: { ...classSource.spellcasting, cantripsKnown: 3 } } as ClassSourceSummary;
+    const result = projectSpellSheet(document, { class: classWithCapacity, progression: document.classProgressions![0], spellSummaries: new Map(), passiveEffects: [{ source: { sourcePath: 'choice.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'order', name: 'Thaumaturge' }, key: 'system.scale.cleric.cantrips-known.value', target: 'cantrip-capacity', operation: 'add', value: 1 }] });
+    expect(result.cantripCapacity).toBe(4);
+  });
+
   it('loads eligible fixed species grants and preserves free-use metadata independently of slots', () => {
     const lineage = spell('lineage', 'Lineage Spell', 0);
     lineage.preparation = 'always';
@@ -327,6 +333,23 @@ describe('spell sheet projection', () => {
       expect.objectContaining({ name: 'Second Prepared', preparationBlockedReason: 'Prepared spell capacity has been reached.' }),
       expect.objectContaining({ name: 'Future Prepared', preparationBlockedReason: 'Spell level is above the highest castable spell level.' }),
     ]));
+  });
+
+  it('does not count cantrips toward leveled spell preparation capacity', () => {
+    const cantrip = spell('ray-of-frost', 'Ray of Frost', 0);
+    const leveled = spell('shield', 'Shield', 1);
+    const selected = structuredClone(document);
+    selected.classProgressions![0]!.selections = [
+      { advancementId: 'cantrips', kind: 'spell', selectionRole: 'cantrips-known', selected: [cantrip] },
+      { advancementId: 'known', kind: 'spell', selectionRole: 'known-spells', selected: [leveled] },
+    ];
+    selected.mutable = { preparedSpells: [cantrip], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [], resources: [] };
+    const source = { ...classSource, spellcasting: { ability: 'int', progression: 'full', preparedSpells: 1, spellSlots: { '1': 2 } } } as unknown as ClassSourceSummary;
+    const result = projectSpellSheet(selected, { class: source, progression: selected.classProgressions![0], spellSummaries: new Map([[refKey(cantrip), cantrip], [refKey(leveled), leveled]]) });
+
+    expect(result.preparedCount).toBe(0);
+    expect(result.cantrips[0]?.preparationBlockedReason).toBeUndefined();
+    expect(result.levels[0]?.spells[0]?.preparationBlockedReason).toBeUndefined();
   });
 });
 

@@ -108,16 +108,29 @@ describe('mutable character state', () => {
     expect(parseCharacterDocument(JSON.parse(JSON.stringify(document)))).toEqual(document);
     expect(document.origin?.identifier).toBe('elf');
   });
+  it('round-trips normalized recovery profiles without sharing mutable arrays', () => {
+    const recovery = [{ period: 'long-rest' as const, type: 'recover-all' as const }, { period: 'short-rest' as const, type: 'formula' as const, formula: '1' }];
+    const input = { ...state, resources: [{ ...state.resources[0]!, recovery }] };
+    const parsed = parseCharacterDocument({ ...createCharacterDocument('Ayla', snapshot), mutable: input }).mutable!;
+    expect(parsed.resources[0]?.recovery).toEqual(recovery);
+    expect(parsed.resources[0]?.recovery).not.toBe(recovery);
+  });
   it('creates authoritative level-one mutable defaults from class progression', () => {
     const finalized = createFinalizedMutableCharacterState(state.inventory, {
-      classSourcePath: 'packs/_source/classes24/fighter/fighter.yml',
+      ruleset: '2024', classSourcePath: 'packs/_source/classes24/fighter/fighter.yml',
       classHitDie: 'd10',
       constitutionModifier: 2,
-      spellSlots: [{ level: 1, maximum: 2 }],
+      spellSlots: [{ key: 'spell:1', kind: 'spell', level: 1, maximum: 2, recovery: ['long-rest'] }],
     });
     expect(finalized.hitPoints).toEqual({ current: 12, maximum: 12, temporary: 0 });
     expect(finalized.inspiration).toBe(false);
-    expect(finalized.spellSlots).toEqual([{ level: 1, current: 2, maximum: 2 }]);
+    expect(finalized.hitDice).toEqual([{ classSourcePath: 'packs/_source/classes24/fighter/fighter.yml', denomination: 'd10', current: 1, maximum: 1 }]);
+    expect(finalized.spellSlots).toEqual([{ key: 'spell:1', kind: 'spell', level: 1, current: 2, maximum: 2, recovery: ['long-rest'] }]);
+  });
+
+  it('does not add 2024 Hit Point Dice semantics to a 2014 finalization', () => {
+    const finalized = createFinalizedMutableCharacterState(state.inventory, { ruleset: '2014', classSourcePath: 'packs/_source/classes/fighter.yml', classHitDie: 'd10', constitutionModifier: 2, spellSlots: [] });
+    expect(finalized.hitDice).toBeUndefined();
   });
   it('adds supported permanent HP modifiers before creating mutable state', () => {
     const finalized = createFinalizedMutableCharacterState(state.inventory, {
@@ -157,6 +170,8 @@ describe('mutable character state', () => {
     ['fractional maximum override', { ...state, hitPoints: { current: 0, maximum: 10, maximumOverride: 1.5, temporary: 0 } }],
     ['current hit points above maximum override', { ...state, hitPoints: { current: 11, maximum: 10, maximumOverride: 8, temporary: 0 } }],
     ['duplicate spell slots', { ...state, spellSlots: [{ level: 1, current: 1, maximum: 1 }, { level: 1, current: 1, maximum: 1 }] }],
+    ['unsafe Hit Point Die source', { ...state, hitDice: [{ classSourcePath: '../fighter.yml', denomination: 'd10', current: 1, maximum: 1 }] }],
+    ['invalid Hit Point Die denomination', { ...state, hitDice: [{ classSourcePath: 'classes/fighter.yml', denomination: 'd20', current: 1, maximum: 1 }] }],
     ['negative spell use', { ...state, spellUses: [{ ...state.spellUses![0], current: -1 }] }],
     ['duplicate spell uses', { ...state, spellUses: [state.spellUses![0]!, state.spellUses![0]!] }],
     ['duplicate resources', { ...state, resources: [state.resources[0]!, state.resources[0]!] }],

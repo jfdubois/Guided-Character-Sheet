@@ -34,7 +34,7 @@ describe('getLevelOneClassProgression', () => {
 
     expect(getLevelOneClassProgression(summary)).toEqual({
       classIdentifier: 'wizard', level: 1, proficiencyBonus: 2,
-      spellcasting: { spellcastingAbility: 'Intelligence', cantripsKnown: 3, spellbookSpells: 6, preparedSpells: 4, spellLists: [], spellSlots: [{ level: 1, maximum: 2 }] },
+      spellcasting: { spellcastingAbility: 'Intelligence', cantripsKnown: 3, spellbookSpells: 6, preparedSpells: 4, spellLists: [], spellSlots: [{ key: 'spell:1', kind: 'spell', level: 1, maximum: 2, recovery: ['long-rest'] }] },
       scales: [],
     });
   });
@@ -42,5 +42,15 @@ describe('getLevelOneClassProgression', () => {
   it('does not invent Wizard counts when source content is incomplete', () => {
     const summary = { source: { identifier: 'wizard', name: 'Wizard' }, ruleset: '2024', hitDie: 'd6', spellcasting: { progression: 'full', ability: 'int' }, features: [], scales: [], advancements: [] } as unknown as ClassSourceSummary;
     expect(getLevelOneClassProgression(summary).spellcasting).toEqual({ spellcastingAbility: 'Intelligence', spellLists: [] });
+  });
+
+  it('projects the pinned level-one Pact Magic progression with short-rest recovery', () => {
+    const summary = { source: { identifier: 'warlock', name: 'Warlock' }, ruleset: '2024', hitDie: 'd8', spellcasting: { progression: 'pact', ability: 'cha' }, features: [], scales: [], advancements: [] } as unknown as ClassSourceSummary;
+    expect(getLevelOneClassProgression(summary).spellcasting?.spellSlots).toEqual([{ key: 'pact:1', kind: 'pact', level: 1, maximum: 1, recovery: ['short-rest', 'long-rest'] }]);
+  });
+
+  it('does not apply the 2024 Pact compatibility mapping to a 2014 class', () => {
+    const summary = { source: { identifier: 'warlock', name: 'Warlock' }, ruleset: '2014', hitDie: 'd8', spellcasting: { progression: 'pact', ability: 'cha' }, features: [], scales: [], advancements: [] } as unknown as ClassSourceSummary;
+    expect(getLevelOneClassProgression(summary).spellcasting?.spellSlots).toBeUndefined();
   });
 });

@@ -39,6 +39,11 @@ describe('feature damage resolver', () => {
     expect(resolveFeatureDamagePart(part('@scale.rogue.range'), context(1, [distance]))).toMatchObject({ diagnostic: expect.stringContaining('@scale.rogue.range') });
   });
 
+  it('preserves challenge-rating scale semantics without treating them as damage', () => {
+    const challengeRating: ClassScaleValueSummary = { advancementId: 'scale', title: 'Wild Shape CR', identifier: 'wild-shape', level: 2, values: new Map([[2, { type: 'cr', value: 0.25 }]]), diagnostics: [] };
+    expect(resolveFeatureDamagePart(part('@scale.druid.wild-shape'), context(2, [challengeRating], 'druid'))).toMatchObject({ diagnostic: expect.stringContaining('challenge rating') });
+  });
+
   it('leaves compound formulas unsupported and reports the original formula', () => {
     const formula = '(@scale.rogue.sneak-attack) + @mod';
     expect(resolveFeatureDamagePart(part(formula), context(1))).toEqual({ diagnostic: expect.stringContaining(formula) });

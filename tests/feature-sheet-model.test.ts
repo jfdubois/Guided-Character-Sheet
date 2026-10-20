@@ -23,6 +23,90 @@ const sources = (): { class: ClassSourceSummary; species: SpeciesSourceSummary; 
 };
 
 describe('feature sheet projection', () => {
+  it('uses the granted origin feat source description', () => {
+    const data = sources();
+    data.background.grantedFeat = { source: data.background.feat!, description: 'Act quickly.', advancements: [] };
+    expect(projectFeatureSheet(base, data).groups[3].entries[0]?.description).toEqual({ kind: 'available', value: 'Act quickly.' });
+  });
+  it('projects every background grant and selected feat description while deduplicating origins', () => {
+    const data = sources();
+    const alert = ref('packs/feats/alert.yml', 'Alert');
+    const tough = data.background.feat!;
+    data.background.grantedFeats = [
+      { source: alert, description: 'Act first.', advancements: [] },
+      { source: tough, description: 'Gain hit points.', advancements: [] },
+    ];
+    const document = structuredClone(base);
+    document.classProgressions![0]!.selections = [{ advancementId: 'feat-choice', kind: 'item', selected: [alert] }];
+    data.class.advancements = [{ id: 'feat-choice', type: 'ItemChoice', level: 1, title: 'Choose feat', hint: '', dependencies: [], raw: {} }];
+    const result = projectFeatureSheet(document, data);
+
+    expect(result.groups[3].entries.map((entry) => [entry.name, entry.description])).toEqual([
+      ['Alert', { kind: 'available', value: 'Act first.' }],
+      ['Tough', { kind: 'available', value: 'Gain hit points.' }],
+    ]);
+    expect(result.groups[3].entries[0]?.origins).toEqual(['Background', 'Class']);
+  });
+
+  it('shows selected feats with unavailable source descriptions and excludes choice-pool candidates', () => {
+    const data = sources();
+    delete data.background.feat;
+    data.background.grantedFeats = [];
+    const selected = ref('packs/feats/selected.yml', 'Selected feat');
+    const pool = ref('packs/feats/pool.yml', 'Pool candidate');
+    data.class.advancements = [{ id: 'feat-choice', type: 'ItemChoice', level: 1, title: 'Choose feat', hint: '', dependencies: [{ uuid: 'pool', source: pool }], raw: {} }];
+    const document = structuredClone(base);
+    document.classProgressions![0]!.selections = [{ advancementId: 'feat-choice', kind: 'item', selected: [selected] }];
+    const selectedFeatSummaries = new Map();
+    selectedFeatSummaries.set(`${selected.sourcePath}:${selected.pack}:${selected.type}:${selected.id}`, null);
+
+    const result = projectFeatureSheet(document, { ...data, selectedFeatSummaries });
+
+    expect(result.groups[3].entries.map(({ name, description }) => [name, description])).toEqual([
+      ['Selected feat', { kind: 'missing', reason: 'Feat source is unavailable.' }],
+    ]);
+    expect(result.groups[3].entries[0]?.origins).toEqual(['Class']);
+    expect(result.groups[3].entries.some(({ name }) => name === 'Pool candidate')).toBe(false);
+  });
+  it('excludes selected class feat references whose advancement is future or unknown', () => {
+    const data = sources();
+    delete data.background.feat;
+    const eligible = ref('packs/feats/eligible.yml', 'Eligible feat');
+    const future = ref('packs/feats/future.yml', 'Future feat');
+    const stale = ref('packs/feats/stale.yml', 'Stale feat');
+    data.class.advancements = [
+      { id: 'level-one-choice', type: 'ItemChoice', level: 1, title: 'Level one', hint: '', dependencies: [], raw: {} },
+      { id: 'secondary-choice', type: 'ItemChoice', level: 1, title: 'Secondary class', hint: '', classRestriction: 'secondary', dependencies: [], raw: {} },
+      { id: 'level-five-choice', type: 'ItemChoice', level: 5, title: 'Level five', hint: '', dependencies: [], raw: {} },
+    ];
+    const document = structuredClone(base);
+    document.classProgressions![0]!.targetLevel = 1;
+    document.classProgressions![0]!.selections = [
+      { advancementId: 'level-one-choice', kind: 'item', selected: [eligible] },
+      { advancementId: 'secondary-choice', kind: 'item', selected: [ref('packs/feats/secondary.yml', 'Secondary feat')] },
+      { advancementId: 'level-five-choice', kind: 'item', selected: [future] },
+      { advancementId: 'removed-choice', kind: 'item', selected: [stale] },
+    ];
+    const selectedFeatSummaries = new Map([[`${eligible.sourcePath}:${eligible.pack}:${eligible.type}:${eligible.id}`, { source: eligible, description: 'Eligible description.', advancements: [] }]]);
+
+    const result = projectFeatureSheet(document, { ...data, selectedFeatSummaries });
+
+    expect(result.groups[3].entries.map((entry) => entry.name)).toEqual(['Eligible feat']);
+  });
+  it('retains a saved background feat reference when the background source is unavailable', () => {
+    const document = structuredClone(base);
+    const feat = ref('packs/feats/saved.yml', 'Saved feat');
+    document.backgroundChoices = { grantedFeat: { feat, spellChoices: [] } };
+
+    const result = projectFeatureSheet(document, { class: sources().class, species: sources().species });
+
+    expect(result.groups[3].entries).toContainEqual(expect.objectContaining({
+      name: 'Saved feat',
+      source: { kind: 'available', value: feat },
+      description: { kind: 'missing', reason: 'Feat source is unavailable.' },
+      origins: ['Background'],
+    }));
+  });
   it('groups, filters by level, deduplicates references, and combines origins', () => {
     const result = projectFeatureSheet(base, sources());
     expect(result.groups.map((group) => group.category)).toEqual(['class', 'species', 'background', 'feats']);
@@ -59,11 +143,60 @@ describe('feature sheet projection', () => {
 
   it('surfaces unsupported stable species effect changes as source warnings', () => {
     const data = sources();
-    data.species.effectDiagnostics = ['Unsupported stable effect change from Test Effect: system.attributes.ac.bonus.'];
+    data.species.features!.push({ source: ref('packs/features/test-effect.yml', 'Test Effect'), level: 1, automatic: true, effectDiagnostics: ['Unsupported stable effect change from Test Effect: system.attributes.ac.bonus.'] });
 
     expect(projectFeatureSheet(base, data).warnings).toContain(
       'Unsupported stable effect change from Test Effect: system.attributes.ac.bonus.',
     );
+  });
+
+  it('only reports effect diagnostics from level-eligible, entitled species features', () => {
+    const data = sources();
+    data.species.features = [
+      { source: ref('packs/features/eligible.yml', 'Eligible effect'), level: 1, automatic: true, effectDiagnostics: ['Eligible diagnostic.'] },
+      { source: ref('packs/features/future.yml', 'Future effect'), level: 5, automatic: true, effectDiagnostics: ['Future diagnostic.'] },
+      { source: ref('packs/features/unselected.yml', 'Unselected effect'), level: 1, selection: { key: 'species:ancestry', value: 'unselected' }, effectDiagnostics: ['Unselected diagnostic.'] },
+    ];
+
+    const result = projectFeatureSheet(base, data);
+
+    expect(result.warnings).toContain('Eligible diagnostic.');
+    expect(result.warnings).not.toContain('Future diagnostic.');
+    expect(result.warnings).not.toContain('Unselected diagnostic.');
+    expect(result.groups[1].entries.map((entry) => entry.name)).toEqual(['Eligible effect']);
+  });
+
+  it('does not expose future automatic features when character level is unavailable', () => {
+    const data = sources();
+    data.species.features = [{ source: ref('packs/features/future.yml', 'Future effect'), level: 5, automatic: true, effectDiagnostics: ['Future diagnostic.'] }];
+
+    const result = projectFeatureSheet({ ...base, classProgressions: [] }, data);
+
+    expect(result.groups[1].entries).toEqual([]);
+    expect(result.warnings).not.toContain('Future diagnostic.');
+  });
+
+  it('accepts a shared feature when any source grant is entitled without grant-order leakage', () => {
+    const data = sources();
+    const shared = ref('packs/features/shared-entitlement.yml', 'Shared entitlement');
+    data.species.features = [{
+      source: shared,
+      level: 1,
+      automatic: true,
+      entitlements: [
+        { level: 5, automatic: true, advancementId: 'future' },
+        { level: 1, selection: { key: 'species:ancestry', value: 'selected' }, advancementId: 'choice' },
+      ],
+    }];
+    const document = structuredClone(base);
+    document.speciesConfiguration = {
+      origin: { ...document.origin! }, foundry: { ...document.foundry }, grants: [], spellChoices: [],
+      choices: [{ key: 'species:ancestry', source: { id: 'ancestry', type: 'ItemChoice' }, selected: ['selected'] }],
+    };
+
+    expect(projectFeatureSheet(document, data).groups[1].entries.map((entry) => entry.name)).toEqual(['Shared entitlement']);
+    data.species.features[0]!.entitlements!.reverse();
+    expect(projectFeatureSheet(document, data).groups[1].entries.map((entry) => entry.name)).toEqual(['Shared entitlement']);
   });
 
   it('does not claim source maximum is current when mutable state is absent and does not mutate', () => {
@@ -184,6 +317,9 @@ describe('feature sheet projection', () => {
 
     expect(entry?.resource?.maximum).toEqual({ kind: 'available', value: 2 });
     expect(entry?.resource?.current.kind).toBe('missing');
+
+    const levelFive = { ...base, classProgressions: [{ ...base.classProgressions![0]!, targetLevel: 5 }] };
+    expect(projectFeatureSheet(levelFive, data).groups[1].entries[0]?.resource?.maximum).toEqual({ kind: 'available', value: 3 });
   });
 
   it('excludes a level-5 automatic species feature for a level-1 character', () => {

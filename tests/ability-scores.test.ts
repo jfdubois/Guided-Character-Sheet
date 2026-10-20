@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { ABILITIES, calculateAbilityScores, collectAbilityBonuses, createDefaultAbilityScores, createPointBuyAbilityScores, getAbilityModifier, getAbilityScoreMethodOptions, pointBuyRemaining, pointBuyTotal, scoreFromRolls, sumAbilityBonuses, validateAbilityScores, type AbilityScoreSelection } from '../src/ability-scores';
+import { ABILITIES, calculateAbilityScores, collectAbilityBonuses, createDefaultAbilityScores, createPointBuyAbilityScores, createStandardArrayDraft, moveStandardArrayValue, canAffordPointBuyScore, getAbilityModifier, getAbilityScoreMethodOptions, pointBuyRemaining, pointBuyTotal, scoreFromRolls, sumAbilityBonuses, validateAbilityScores, type AbilityScoreSelection } from '../src/ability-scores';
 import type { BackgroundSourceSummary } from '../src/character-sources';
 
 describe('ability scores', () => {
+  it('starts every Standard Array ability unassigned', () => {
+    expect(createStandardArrayDraft().base).toEqual({});
+  });
+
+  it('moves a used Standard Array value and clears its former ability', () => {
+    const first = moveStandardArrayValue(createStandardArrayDraft(), 'str', 15);
+    const second = moveStandardArrayValue(first, 'dex', 14);
+    const moved = moveStandardArrayValue(second, 'con', 15);
+    expect(moved.base).toEqual({ dex: 14, con: 15 });
+    expect(first.base).toEqual({ str: 15 });
+  });
   it('applies a valid saved 2024 background allocation exactly once', () => {
     const background = { ruleset: '2024', abilityScores: { advancementId: 'asi', points: 3, cap: 2, locked: ['str', 'dex', 'con'], fixed: { int: 0, wis: 0, cha: 0 } } } as unknown as BackgroundSourceSummary;
     const sources = collectAbilityBonuses(undefined, undefined, undefined, background, { advancementId: 'asi', assignments: { int: 2, wis: 1 } });
@@ -35,6 +46,14 @@ describe('ability scores', () => {
     expect(pointBuyRemaining(pointBuy.base)).toBe(27);
   });
 
+  it('rejects point buy choices whose incremental cost exceeds the remaining budget', () => {
+    const scores = { str: 15, dex: 8, con: 8, int: 8, wis: 8, cha: 8 };
+    expect(canAffordPointBuyScore(scores, 'dex', 15)).toBe(true);
+    expect(canAffordPointBuyScore(scores, 'dex', 16)).toBe(false);
+    expect(canAffordPointBuyScore({ ...scores, dex: 15, con: 15 }, 'int', 9)).toBe(false);
+    expect(canAffordPointBuyScore(scores, 'dex', 7)).toBe(false);
+  });
+
   it('keeps the six D&D abilities in display order', () => {
     expect(ABILITIES).toEqual(['str', 'dex', 'con', 'int', 'wis', 'cha']);
     expect(scoreFromRolls([6, 6, 4, 2])).toBe(16);
@@ -45,7 +64,7 @@ describe('ability scores', () => {
       { value: '', label: 'Select an option', placeholder: true },
       { value: 'standard-array', label: 'Standard array', placeholder: false },
       { value: 'point-buy', label: 'Point buy', placeholder: false },
-      { value: 'dice-rolling', label: 'Dice rolling', placeholder: false },
+      { value: 'dice-rolling', label: 'Rolled scores (enter totals)', placeholder: false },
     ]);
   });
 

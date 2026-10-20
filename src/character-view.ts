@@ -1,20 +1,28 @@
 import { ItemView, TFile, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
-import { withAbilityScores, withBackground, withBackgroundAbilityScores, withBackgroundEquipment, withBackgroundGrantedFeat, withBackgroundLanguages, withClassEquipment, withClassProgression, withInventory, withMutableState, withName, withOrigin, withRuleset, withSpeciesConfiguration, type CharacterDocument, type CharacterRuleset } from './character-model';
+import { withAbilityScores, withPointBuyDraft, withRolledAbilityDraft, withStandardArrayDraft, withBackground, withBackgroundAbilityScores, withBackgroundEquipment, withBackgroundGrantedFeat, withBackgroundLanguages, withClassEquipment, withClassProgression, withInventory, withMutableState, withName, withOrigin, withRuleset, withSpeciesConfiguration, type CharacterDocument, type CharacterRuleset } from './character-model';
 import type { CharacterStore } from './character-store';
 import type { BackgroundSourceSummary, CharacterSourceOption, ClassAdvancementSummary, ClassSourceSummary, FoundrySourceReference, SourceIndex, SourceReader, SpeciesFeatureSummary, SpeciesSourceSummary } from './character-sources';
-import { languageSelectorKey, languageSelectorOptions, type FoundryItemSummary, type FoundryLanguageOption, type FoundrySpellSummary, type SpellSearchFilters } from './foundry-source-catalog';
+import { languageSelectorKey, languageSelectorLabel, languageSelectorOptions, type FoundryItemSummary, type FoundryLanguageOption, type FoundrySpellSummary, type SpellSearchFilters } from './foundry-source-catalog';
 import { isRecord } from './foundry-utils';
 import { buildClassConfiguration, getLevelOneDerivedSpellChoices, mergeClassSelection, restoreClassConfiguration, setClassSelection, toClassProgressionSelection, validateClassConfiguration, type ClassAdvancementSelection, type ClassConfiguration } from './class-configuration';
 import { buildSpeciesConfiguration, FOUNDRY_SKILL_LABELS, getAvailableSpeciesSpellChoices, isDraconicResistanceChoice, isSpeciesChoiceAvailable, isSupportedSelector, restoreSpeciesConfiguration, setSpeciesChoice, setSpeciesSize, setSpeciesSpellChoice, setSpeciesSpellcastingAbility, validateSpeciesConfiguration, type SpeciesConfiguration } from './species-configuration';
-import { emptyInventory, expandInventoryContainers, flattenSelectedEquipment, isFoundryInventoryEntry, replaceInventorySource, type EquipmentSelection } from './inventory';
+import { applyInventoryItemChanges, emptyInventory, expandInventoryContainers, flattenSelectedEquipment, isFoundryInventoryEntry, replaceInventorySource, type EquipmentSelection, type InventoryItemChanges } from './inventory';
 import { getEquipmentChoiceLabel, getEquipmentOptionContents, resolveStartingEquipmentItems, type EquipmentPackageNode, type EquipmentPackageSummary } from './equipment';
-import { ABILITIES, calculateAbilityScores, collectAbilityBonuses, createDefaultAbilityScores, createPointBuyAbilityScores, getAbilityScoreMethodOptions, pointBuyRemaining, scoreFromRolls, sumAbilityBonuses, validateAbilityScores, type Ability, type AbilityScoreMethod, type AbilityScoreSelection } from './ability-scores';
+import { ABILITIES, calculateAbilityScores, canAffordPointBuyScore, collectAbilityBonuses, createDefaultAbilityScores, createPointBuyAbilityScores, createRolledAbilityDraft, createStandardArrayDraft, getAbilityScoreMethodOptions, isValidRolledBase, moveStandardArrayValue, pointBuyRemaining, sumAbilityBonuses, validateAbilityScores, type Ability, type AbilityScoreMethod, type AbilityScoreSelection, type PointBuyDraft, type RolledAbilityDraft, type StandardArrayDraft } from './ability-scores';
 import { isSpellChoiceAvailable, setSpellChoice, setSpellcastingAbility, type SpellChoice, type SpellChoiceOption, type SpellChoiceSelection } from './spell-configuration';
 import { getLevelOneClassProgression, type LevelOneClassProgression } from './level-one-progression';
-import { adjustHitPoints, adjustMutableResourceCurrent, createFinalizedMutableCharacterState } from './mutable-character-state';
+import { adjustHitPoints, adjustMutableResourceCurrent, createFinalizedMutableCharacterState, type CharacterResource, type CharacterSpellUse } from './mutable-character-state';
 import { HitPointAdjustmentModal } from './hit-point-adjustment-modal';
+import { CurrencyModal } from './currency-modal';
+import { applyCurrencyTransaction, type CurrencyDenomination, type CurrencyOperation } from './currency-transaction';
+import { RestModal, type RestChoice } from './rest-modal';
+import { applyLongRest } from './long-rest';
+import { applyShortRest } from './short-rest';
+import { applyLevelOne2024RestCompatibility, type LevelOne2024RestSource } from './rest-state-compatibility';
 import { ManageSpellsModal, referenceKey as spellReferenceKey } from './manage-spells-modal';
-import { mutableResetForPeriod, recoverableResetForUses } from './resource-period';
+import { ManageItemsModal } from './manage-items-modal';
+import { mutableRecoveryProfiles, mutableResetForPeriod, recoverableResetForUses } from './resource-period';
+import type { FoundryUsesSummary } from './foundry-activity-summary';
 import { renderRepeatedDropdownChoice } from './selection-controls';
 import { buildBackgroundAbilityConfiguration, createBackgroundAbilitySelection, validateBackgroundAbilitySelection, type BackgroundAbilityConfiguration, type BackgroundAbilitySelection } from './background-ability-configuration';
 import { buildGrantedFeatConfiguration, getAvailableGrantedFeatSpellChoices, restoreGrantedFeatConfiguration, setGrantedFeatSpellChoice, setGrantedFeatSpellcastingAbility, toGrantedFeatSelection, validateGrantedFeatConfiguration, type GrantedFeatChoiceConfiguration, type GrantedFeatConfiguration, type GrantedFeatSelection } from './granted-feat-configuration';
@@ -23,9 +31,17 @@ import { renderCharacterSheet, type CharacterSheetCharacterOption } from './char
 import type { InventoryProjectionValue } from './inventory-sheet-model';
 import { isFoundrySourceReference } from './foundry-source-reference';
 import type { SourceSnapshot } from './source-tree';
+import { collectExpertiseProficiencies, filterExpertiseCandidates, getExpertisePool, matchesAnySelector, validateExpertiseSelections } from './expertise-eligibility';
+import { getEligibleSpeciesFeatures } from './species-feature-eligibility';
+import { getEligibleClassFeatures, getEligibleClassScales } from './class-feature-eligibility';
+import { getEligibleClassProficiencies } from './class-proficiency-eligibility';
+import { proficiencyBonusForLevel } from './proficiency-bonus';
 import { renderFoundryOverview } from './foundry-overview-renderer';
+import { isWeaponTrained, validateWeaponMasterySelections } from './weapon-training';
+import { resolveFeatureScaleLookup } from './feature-damage-resolver';
 
 export const CHARACTER_VIEW_TYPE = 'guided-character-sheet';
+type RestCompatibilityContext = LevelOne2024RestSource & { selectionSignature: string };
 export function createAbilityScoreUpdate(selection: AbilityScoreSelection): (document: CharacterDocument) => CharacterDocument { const snapshot = structuredClone(selection); return (document) => withAbilityScores(document, snapshot); }
 
 export interface LevelOneProgressionSummary {
@@ -35,11 +51,11 @@ export interface LevelOneProgressionSummary {
   learnedSpells?: number;
   spellbookSpells?: number;
   preparedCapacity?: number;
-  spellSlots: Array<{ level: number; maximum: number }>;
+  spellSlots: NonNullable<NonNullable<LevelOneClassProgression['spellcasting']>['spellSlots']>;
   diagnostics: string[];
 }
 
-function levelOneSpellSlots(summary: ClassSourceSummary, progression: LevelOneClassProgression): Array<{ level: number; maximum: number }> {
+function levelOneSpellSlots(summary: ClassSourceSummary, progression: LevelOneClassProgression): NonNullable<NonNullable<LevelOneClassProgression['spellcasting']>['spellSlots']> {
   void summary;
   return progression.spellcasting?.spellSlots ?? [];
 }
@@ -108,7 +124,7 @@ export interface SpeciesRenderDependency { name: string; sourcePath: string; }
 export interface SpeciesRenderEntry { level: number; type: string; hint: string; dependencies: SpeciesRenderDependency[]; }
 export interface SpeciesFeatureRenderCallout { name: string; description?: string; sourcePath: string; }
 export interface SpeciesTraitDisplayValue { label: string; value: string; }
-export type SpeciesRenderState = { kind: 'species-summary'; name: string; sourcePath: string; description?: string; overviewHtml?: string; movement?: Record<string, unknown>; senses?: Record<string, unknown>; creatureType?: Record<string, unknown>; size?: { options: string[]; selected?: string; required: boolean }; features?: SpeciesFeatureSummary[]; automatic: SpeciesRenderEntry[]; pending: SpeciesRenderEntry[]; dependencies: SpeciesRenderDependency[]; unresolvedDependencies: string[]; unresolvedWarnings: string[] };
+export type SpeciesRenderState = { kind: 'species-summary'; name: string; sourcePath: string; description?: string; overviewHtml?: string; movement?: Record<string, unknown>; senses?: Record<string, unknown>; creatureType?: Record<string, unknown>; size?: { options: string[]; selected?: string; required: boolean }; features?: Array<SpeciesFeatureSummary & { selected?: boolean }>; automatic: SpeciesRenderEntry[]; pending: SpeciesRenderEntry[]; dependencies: SpeciesRenderDependency[]; unresolvedDependencies: string[]; unresolvedWarnings: string[] };
 export interface SpeciesChoiceRenderControl { key: string; label: string; required: number; options: Array<{ value: string; label: string; description?: string; damageTypes?: string[] }>; selected: string[]; }
 export interface SpeciesConfigurationRenderInput { choices?: SpeciesChoiceRenderControl[]; spellChoices?: SpellChoice[]; spellcastingAbility?: SpeciesConfiguration['spellcastingAbility']; warnings?: string[]; unresolvedWarnings?: string[]; }
 export type ClassRenderState = { kind: 'class'; options: CharacterSourceOption[]; diagnostic?: string } | { kind: 'class-unavailable'; message: string } | { kind: 'class-summary'; name: string; sourcePath: string; hitDie: string; targetLevel: number; automatic: ClassAdvancementSummary[]; pending: ClassAdvancementSummary[]; dependencies: SpeciesRenderDependency[]; diagnostics: string[]; choices: ClassAdvancementSelection[]; proficiencies?: ClassSourceSummary['proficiencies']; features?: ClassSourceSummary['features']; scales?: ClassSourceSummary['scales']; startingEquipment?: EquipmentPackageSummary };
@@ -130,6 +146,40 @@ export function getBackgroundLanguageOptions(summary: Pick<BackgroundSourceSumma
   const fixed = new Set(summary.languages.map(languageSelectorKey)); fixed.add('common');
   const seen = new Set<string>();
   return summary.languageChoices.flatMap((choice) => choice.pool.flatMap((pool) => languageSelectorOptions(pool))).filter((option) => { const key = languageSelectorKey(option.value); if (fixed.has(key) || seen.has(key)) return false; seen.add(key); return true; });
+}
+export function getKnownLanguageKeys(document: CharacterDocument, sources: CharacterSheetSources): Set<string> {
+  const values = new Set<string>();
+  const add = (value: unknown): void => { if (typeof value === 'string' && value.startsWith('languages:')) values.add(languageSelectorKey(value)); };
+  for (const value of sources.background?.languages ?? []) add(value);
+  for (const value of sources.class?.proficiencies?.languages ?? []) add(value);
+  for (const value of getCurrentLevelSavedLanguageChoices(document, sources)) add(value);
+  const targetLevel = document.classProgressions?.[0]?.targetLevel ?? 1;
+  for (const advancement of sources.species?.advancements ?? []) if (advancement.level <= targetLevel) {
+    const configured = advancement.raw.configuration;
+    if (isRecord(configured) && Array.isArray(configured.grants)) for (const value of configured.grants) add(value);
+  }
+  for (const value of document.backgroundChoices?.languages ?? []) add(value);
+  return values;
+}
+function getCurrentLevelSavedLanguageChoices(document: CharacterDocument, sources: CharacterSheetSources): string[] {
+  const targetLevel = document.classProgressions?.[0]?.targetLevel ?? 1;
+  const selected: string[] = [];
+  for (const choice of document.speciesConfiguration?.choices ?? []) {
+    const advancement = sources.species?.advancements.find((entry) => entry.id === choice.source.id);
+    if (advancement !== undefined && advancement.level <= targetLevel) selected.push(...choice.selected);
+  }
+  for (const progression of document.classProgressions ?? []) for (const selection of progression.selections) {
+    const advancement = sources.class?.advancements.find((entry) => entry.id === selection.advancementId);
+    if (advancement === undefined || advancement.level > targetLevel || advancement.classRestriction !== undefined && advancement.classRestriction !== 'primary') continue;
+    if ((selection.kind === 'trait' || selection.kind === 'expertise') && Array.isArray(selection.selected)) selected.push(...selection.selected);
+  }
+  return selected;
+}
+export function classChoiceDisplayOptionFromSource(item: FoundryItemSummary, selector: string, masteryDescriptions?: ReadonlyMap<string, string>): ClassChoiceDisplayOption {
+  const selectorPrefix = selector.slice(0, -2);
+  const masteryDescription = item.mastery === undefined ? undefined : masteryDescriptions?.get(item.mastery.toLocaleLowerCase());
+  const description = masteryDescription ?? item.description;
+  return { id: `${selectorPrefix}:${item.id}`, name: item.name, sourcePath: item.sourcePath, source: item, sourceSelector: selector, ...(description === undefined ? {} : { description }) };
 }
 export function getSelectedBackgroundLanguageValues(options: FoundryLanguageOption[], selected: string[]): string[] {
   const selectedKeys = new Set(selected.map(languageSelectorKey)); const seen = new Set<string>();
@@ -163,7 +213,7 @@ export function renderBackgroundGrantedFeatControls(root: HTMLElement, configura
   };
   redraw();
 }
-export type BackgroundRenderState = { kind: 'background'; options: CharacterSourceOption[]; diagnostic?: string } | { kind: 'background-unavailable'; message: string } | { kind: 'background-summary'; name: string; sourcePath: string; ruleset: CharacterRuleset; description?: string; abilityScores?: BackgroundSourceSummary['abilityScores']; feat?: BackgroundSourceSummary['feat']; skills: string[]; languages: string[]; languageChoices: BackgroundSourceSummary['languageChoices']; tools: string[]; equipment: BackgroundSourceSummary['equipment']; features: BackgroundSourceSummary['features']; wealth?: string; startingEquipment?: EquipmentPackageSummary };
+export type BackgroundRenderState = { kind: 'background'; options: CharacterSourceOption[]; diagnostic?: string } | { kind: 'background-unavailable'; message: string } | { kind: 'background-summary'; name: string; sourcePath: string; ruleset: CharacterRuleset; description?: string; abilityScores?: BackgroundSourceSummary['abilityScores']; feat?: BackgroundSourceSummary['feat']; grantedFeat?: BackgroundSourceSummary['grantedFeat']; grantedFeats?: BackgroundSourceSummary['grantedFeats']; skills: string[]; languages: string[]; languageChoices: BackgroundSourceSummary['languageChoices']; tools: string[]; equipment: BackgroundSourceSummary['equipment']; features: BackgroundSourceSummary['features']; wealth?: string; startingEquipment?: EquipmentPackageSummary };
 
 const CREATION_SECTION_LABELS: Array<{ id: CharacterCreationSectionId; label: string }> = [
   { id: 'identity', label: 'Identity' },
@@ -188,18 +238,19 @@ export function getCharacterCreationSections(document: CharacterDocument, _grant
     else if (grantedFeatConfiguration?.kind === 'choice') backgroundComplete = validateGrantedFeatConfiguration(restoreGrantedFeatConfiguration(grantedFeatConfiguration, document.backgroundChoices?.grantedFeat), { requireComplete: true }).length === 0;
   }
   if (backgroundComplete) complete.add('background');
-  if (document.abilityScores !== undefined) complete.add('ability-scores');
+  if (hasValidCreationAbilityScores(document)) complete.add('ability-scores');
   const activeId = CREATION_SECTION_LABELS.find(({ id }) => !complete.has(id) && id !== 'ability-scores' && id !== 'inventory')?.id;
   return CREATION_SECTION_LABELS.map(({ id, label }) => ({ id, label, status: complete.has(id) ? 'complete' : id === activeId ? 'active' : 'upcoming' }));
 }
 
 export function getBackgroundRenderState(document: CharacterDocument, summary: BackgroundSourceSummary | undefined, options?: CharacterSourceOption[]): BackgroundRenderState {
   if (summary === undefined) return options === undefined ? { kind: 'background-unavailable', message: document.background ? `Unable to resolve saved background source: ${document.background.sourcePath}` : 'Background sources are unavailable. Download the Foundry sources first.' } : { kind: 'background', options, ...(options.length === 0 ? { diagnostic: 'No backgrounds are available for this ruleset.' } : {}) };
-  return { kind: 'background-summary', name: summary.source.name, sourcePath: summary.source.sourcePath, ruleset: summary.ruleset, ...(summary.description === undefined ? {} : { description: summary.description }), ...(summary.abilityScores === undefined ? {} : { abilityScores: summary.abilityScores }), ...(summary.feat === undefined ? {} : { feat: summary.feat }), skills: summary.skills, languages: summary.languages, languageChoices: summary.languageChoices, tools: summary.tools, equipment: summary.equipment, features: summary.features, ...(summary.wealth === undefined ? {} : { wealth: summary.wealth }), ...(summary.startingEquipment === undefined ? {} : { startingEquipment: summary.startingEquipment }) };
+  return { kind: 'background-summary', name: summary.source.name, sourcePath: summary.source.sourcePath, ruleset: summary.ruleset, ...(summary.description === undefined ? {} : { description: summary.description }), ...(summary.abilityScores === undefined ? {} : { abilityScores: summary.abilityScores }), ...(summary.feat === undefined ? {} : { feat: summary.feat }), ...(summary.grantedFeat === undefined ? {} : { grantedFeat: summary.grantedFeat }), ...(summary.grantedFeats === undefined ? {} : { grantedFeats: summary.grantedFeats }), skills: summary.skills, languages: summary.languages, languageChoices: summary.languageChoices, tools: summary.tools, equipment: summary.equipment, features: summary.features, ...(summary.wealth === undefined ? {} : { wealth: summary.wealth }), ...(summary.startingEquipment === undefined ? {} : { startingEquipment: summary.startingEquipment }) };
 }
 
 export function getBackgroundFeatureCallouts(state: Extract<BackgroundRenderState, { kind: 'background-summary' }>): BackgroundFeatureRenderCallout[] {
-  return state.features.map((feature) => ({ name: feature.source.name, ...(feature.description === undefined ? {} : { description: feature.description }) }));
+  const feats = state.grantedFeats ?? (state.grantedFeat === undefined ? [] : [state.grantedFeat]);
+  return [...state.features.map((feature) => ({ name: feature.source.name, ...(feature.description === undefined ? {} : { description: feature.description }) })), ...feats.map((feat) => ({ name: feat.source.name, ...(feat.description === undefined ? {} : { description: feat.description }) }))];
 }
 type BackgroundOverview = { description?: string; abilityScores?: BackgroundSourceSummary['abilityScores']; skills: string[]; languages: string[]; tools: string[]; equipment?: BackgroundSourceSummary['equipment']; wealth?: string };
 export function getBackgroundOverview(state: Extract<BackgroundRenderState, { kind: 'background-summary' }>): BackgroundOverview {
@@ -215,7 +266,10 @@ export function getClassRenderState(document: CharacterDocument, summary: ClassS
   const dependency = (value: typeof summary.advancements[number]['dependencies'][number]): SpeciesRenderDependency | null => value.source ? { name: value.source.name, sourcePath: value.source.sourcePath } : null;
   const validChoices = new Set(levelOne.map((entry) => entry.id));
   for (const selection of configuration.selections) if (selection.advancementId.startsWith(`derived:${summary.source.sourcePath}:`)) validChoices.add(selection.advancementId);
-  return { kind: 'class-summary', name: summary.source.name, sourcePath: summary.source.sourcePath, hitDie: summary.hitDie, targetLevel: configuration.targetLevel, automatic: levelOne.filter((entry) => !interactive.has(entry.id)), pending: levelOne.filter((entry) => interactive.has(entry.id)), dependencies: levelOne.flatMap((entry) => entry.dependencies.map(dependency).filter((value): value is SpeciesRenderDependency => value !== null)), diagnostics: [...new Set([...configuration.diagnostics, ...validateClassConfiguration(configuration, { class: configuration.class, summary, configuration })])], choices: configuration.choices.filter((choice) => validChoices.has(choice.advancementId)), proficiencies: summary.proficiencies, features: summary.features?.filter((feature) => feature.level <= configuration.targetLevel), scales: summary.scales, ...(summary.startingEquipment === undefined ? {} : { startingEquipment: summary.startingEquipment }) };
+  const projectionDocument = document.classProgressions?.some((progression) => progression.class.sourcePath === summary.source.sourcePath)
+    ? document
+    : { ...document, classProgressions: [toClassProgressionSelection(configuration)] };
+  return { kind: 'class-summary', name: summary.source.name, sourcePath: summary.source.sourcePath, hitDie: summary.hitDie, targetLevel: configuration.targetLevel, automatic: levelOne.filter((entry) => !interactive.has(entry.id)), pending: levelOne.filter((entry) => interactive.has(entry.id)), dependencies: levelOne.flatMap((entry) => entry.dependencies.map(dependency).filter((value): value is SpeciesRenderDependency => value !== null)), diagnostics: [...new Set([...configuration.diagnostics, ...validateClassConfiguration(configuration, { class: configuration.class, summary, configuration })])], choices: configuration.choices.filter((choice) => validChoices.has(choice.advancementId)), proficiencies: getEligibleClassProficiencies(projectionDocument, summary), features: getEligibleClassFeatures(projectionDocument, summary), scales: getEligibleClassScales(projectionDocument, summary), ...(summary.startingEquipment === undefined ? {} : { startingEquipment: summary.startingEquipment }) };
 }
 
 export function getClassFeatureCallouts(state: ClassRenderState): ClassFeatureRenderCallout[] {
@@ -224,7 +278,7 @@ export function getClassFeatureCallouts(state: ClassRenderState): ClassFeatureRe
 }
 export function shouldRenderClassFeatureSelections(state: ClassRenderState): boolean { return state.kind === 'class-summary' && state.choices.length > 0; }
 
-export function renderClassConfigurationControls(root: HTMLElement, configuration: ClassConfiguration, onChange: (configuration: ClassConfiguration, changedSelection?: ClassAdvancementSelection) => void, onlyAdvancementId?: string, spellQuery?: SpellCatalogQuery, resolvedPools?: Map<string, ClassChoiceDisplayOption[]>): void {
+export function renderClassConfigurationControls(root: HTMLElement, configuration: ClassConfiguration, onChange: (configuration: ClassConfiguration, changedSelection?: ClassAdvancementSelection) => void, onlyAdvancementId?: string, spellQuery?: SpellCatalogQuery, resolvedPools?: Map<string, ClassChoiceDisplayOption[]>, expertiseProficiencies: readonly string[] = [], weaponTraining: readonly string[] = [], knownLanguages: ReadonlySet<string> = new Set()): void {
   const choices = onlyAdvancementId === undefined ? configuration.choices : configuration.choices.filter((choice) => choice.advancementId === onlyAdvancementId);
   for (const choice of choices) {
     if (choice.kind === 'spell') {
@@ -243,21 +297,29 @@ export function renderClassConfigurationControls(root: HTMLElement, configuratio
     field.createEl('label', { text: getClassChoiceLabel(configuration, choice) });
     const selected = choice.kind === 'trait' || choice.kind === 'expertise' ? choice.selected : choice.kind === 'subclass' ? (choice.selected ? [choice.selected.id] : []) : choice.selected.map((item) => item.id);
     const advancement = configuration.advancements.find((entry) => entry.id === choice.advancementId);
+    const isMastery = choice.kind === 'trait' && isRecord(advancement?.raw.configuration) && advancement.raw.configuration.mode === 'mastery';
     const dependencies = advancement?.dependencies.filter((dependency) => dependency.source !== null) ?? [];
-    const options: ClassChoiceDisplayOption[] = choice.kind === 'trait' || choice.kind === 'expertise'
+    const poolOptions: ClassChoiceDisplayOption[] = choice.kind === 'trait' || choice.kind === 'expertise'
       ? classTraitDisplayOptions(choice.configuredPool ?? [], resolvedPools?.get(choice.advancementId))
       : choice.kind === 'subclass'
         ? choice.options.map((option) => ({ ...option, source: option, description: dependencies.find((dependency) => dependency.source?.id === option.id)?.description }))
         : dependencies.flatMap((dependency) => dependency.source ? [{ ...dependency.source, source: dependency.source, ...(dependency.description === undefined ? {} : { description: dependency.description }) }] : []);
+    const eligibleOptions = choice.kind === 'expertise'
+      ? filterExpertiseCandidates(poolOptions, choice.configuredPool ?? [], expertiseProficiencies)
+      : isMastery ? filterMasteryCandidates(poolOptions, weaponTraining) : poolOptions;
+    const selectedLanguageKeys = new Set(selected.filter((value) => value.startsWith('languages:')).map(languageSelectorKey));
+    const options = eligibleOptions.filter((option) => !option.id.startsWith('languages:') || !knownLanguages.has(languageSelectorKey(option.id)) || selectedLanguageKeys.has(languageSelectorKey(option.id)));
     const required = classChoiceCount(configuration, choice);
-    const validIds = options.map((option) => option.id).concat(choice.kind === 'trait' || choice.kind === 'expertise' ? (choice.configuredPool ?? []) : []);
+    const validIds = options.map((option) => option.id).concat(!isMastery && (choice.kind === 'trait' || choice.kind === 'expertise') ? (choice.configuredPool ?? []) : []);
     let updateDetails = (_values: string[]): void => undefined;
     renderRepeatedDropdownChoice(field, {
       count: required,
       options: options.map((option) => ({ value: option.id, label: option.name })),
       selected,
       ariaLabel: (index) => required === 1 ? getClassChoiceLabel(configuration, choice) : `${getClassChoiceHeading(configuration, choice)} ${index + 1} of ${required}`,
-      unavailableLabel: (value) => validIds.includes(value) ? value : `${value} (invalid saved selection)`,
+      unavailableLabel: (value) => isMastery ? `${selectorLabel(value)} (not eligible for Weapon Mastery)` : choice.kind === 'expertise' && matchesAnySelector(value, choice.configuredPool ?? [])
+        ? `${selectorLabel(value)} (not proficient)`
+        : validIds.includes(value) ? value : `${value} (invalid saved selection)`,
     }, (values) => {
       updateDetails(values);
       try {
@@ -268,7 +330,17 @@ export function renderClassConfigurationControls(root: HTMLElement, configuratio
     });
     updateDetails = renderClassChoiceDetails(field, options, selected);
   }
-  const invalid = choices.flatMap((choice) => { const selected = classSelectionIds(choice); const valid = choice.kind === 'trait' || choice.kind === 'expertise' ? (choice.configuredPool ?? []) : choice.kind === 'subclass' ? choice.options.map((item) => item.id) : choice.kind === 'spell' ? (choice.options ?? []).map((option) => option.source.id) : configuration.advancements.find((entry) => entry.id === choice.advancementId)?.dependencies.flatMap((dependency) => dependency.source ? [dependency.source.id] : []) ?? []; return selected.filter((value) => !valid.some((candidate) => candidate === value || candidate.endsWith(':*') && value.startsWith(candidate.slice(0, -1)))).map((value) => `Invalid saved class selection: ${choice.advancementId} (${value})`); });
+  const invalid = choices.flatMap((choice) => {
+    const selected = classSelectionIds(choice);
+    const valid = choice.kind === 'trait' || choice.kind === 'expertise' ? (choice.configuredPool ?? []) : choice.kind === 'subclass' ? choice.options.map((item) => item.id) : choice.kind === 'spell' ? (choice.options ?? []).map((option) => option.source.id) : configuration.advancements.find((entry) => entry.id === choice.advancementId)?.dependencies.flatMap((dependency) => dependency.source ? [dependency.source.id] : []) ?? [];
+    const sourceWarnings = choice.kind === 'expertise'
+      ? validateExpertiseSelections(selected, choice.configuredPool ?? [], expertiseProficiencies, selectorLabel)
+      : [];
+    return [
+      ...selected.filter((value) => !valid.some((candidate) => candidate === value || candidate.endsWith(':*') && value.startsWith(candidate.slice(0, -1)))).map((value) => `Invalid saved class selection: ${choice.advancementId} (${value})`),
+      ...sourceWarnings,
+    ];
+  });
   if (configuration.diagnostics.length > 0 || invalid.length > 0) { root.createEl('h4', { text: 'Warnings' }); const list = root.createEl('ul'); for (const warning of [...configuration.diagnostics, ...invalid]) list.createEl('li', { text: warning, cls: 'guided-character-sheet__warning' }); }
 }
 
@@ -277,6 +349,23 @@ function classTraitDisplayOptions(configuredPool: string[], resolved: ClassChoic
   const skills = Object.entries(FOUNDRY_SKILL_LABELS).map(([id, name]) => ({ id: `skills:${id}`, name, sourcePath: '' }));
   const explicit = configuredPool.filter((value) => value !== 'skills:*').map((value) => ({ id: value, name: selectorLabel(value), sourcePath: '' }));
   return [...new Map([...skills, ...explicit, ...canonicalizeWildcardOptions(configuredPool, resolved ?? [])].map((option) => [option.id, option])).values()];
+}
+
+function filterMasteryCandidates(options: ClassChoiceDisplayOption[], training: readonly string[]): ClassChoiceDisplayOption[] {
+  const eligible = options.filter((option) => {
+    const source = option.source;
+    return source !== undefined && 'itemType' in source && source.itemType === 'weapon'
+      && 'magic' in source && source.magic === false
+      && 'mastery' in source && typeof source.mastery === 'string' && source.mastery.trim().length > 0
+      && isWeaponTrained(source as FoundryItemSummary, training) === true;
+  });
+  return [...new Map(eligible.map((option) => [option.id, option])).values()];
+}
+
+function classChoicePriority(choice: ClassAdvancementSelection): number {
+  if (choice.kind === 'trait' && (choice.configuredPool ?? []).some((value) => /^(?:skills|tools?):/.test(value))) return 0;
+  if (choice.kind === 'expertise') return 1;
+  return 2;
 }
 
 function canonicalizeWildcardOptions(configuredPool: string[], options: ClassChoiceDisplayOption[]): ClassChoiceDisplayOption[] {
@@ -414,7 +503,7 @@ function spellSelectionKey(value: string | FoundrySourceReference | undefined): 
   return typeof value === 'string' ? value : `${value.sourcePath}:${value.pack}:${value.type}:${value.id}`;
 }
 
-function renderClassChoiceDetails(field: HTMLElement, options: ClassChoiceDisplayOption[], selected: string[]): (values: string[]) => void {
+export function renderClassChoiceDetails(field: HTMLElement, options: ClassChoiceDisplayOption[], selected: string[]): (values: string[]) => void {
   if (!options.some((option) => option.description !== undefined) || typeof field.createDiv !== 'function') return () => undefined;
   const details = field.createDiv({ cls: 'guided-character-sheet__choice-detail' });
   const update = (values: string[]): void => { details.textContent = options.filter((option) => values.includes(option.id)).flatMap((option) => option.description ? [option.description] : []).join('\n\n'); };
@@ -450,6 +539,11 @@ export function getClassChoiceHeading(configuration: ClassConfiguration, choice:
 }
 function selectorLabel(value: string): string {
   const [kind, code] = value.split(':', 2);
+  if (kind === 'languages') return languageSelectorLabel(value) ?? value;
+  if (kind === 'weapon' && value.split(':').length > 2) {
+    const weapon = value.split(':').at(-1)!.replace(/[-_]/g, ' ');
+    return weapon.toLocaleLowerCase() === 'handcrossbow' ? 'Hand Crossbow' : humanizeTraitLabel(weapon);
+  }
   const labels: Record<string, Record<string, string>> = {
     skills: { acr: 'Acrobatics', ani: 'Animal Handling', arc: 'Arcana', ath: 'Athletics', dec: 'Deception', his: 'History', ins: 'Insight', itm: 'Intimidation', inv: 'Investigation', med: 'Medicine', nat: 'Nature', prc: 'Perception', prf: 'Performance', per: 'Persuasion', rel: 'Religion', slt: 'Sleight of Hand', ste: 'Stealth', sur: 'Survival' },
     armor: { lgt: 'Light armor', med: 'Medium armor', hvy: 'Heavy armor', shl: 'Shields' },
@@ -458,10 +552,11 @@ function selectorLabel(value: string): string {
     languages: { common: 'Common', elvish: 'Elvish', dwarvish: 'Dwarvish' },
     saves: { str: 'Strength', dex: 'Dexterity', con: 'Constitution', int: 'Intelligence', wis: 'Wisdom', cha: 'Charisma' },
   };
-  return kind === 'saves' && labels[kind]?.[code] ? `${labels[kind][code]} saving throws` : labels[kind]?.[code] ?? value;
+  return kind === 'saves' && labels[kind]?.[code] ? `${labels[kind][code]} saving throws` : labels[kind]?.[code] ?? (kind === 'weapon' ? humanizeTraitLabel(code.replace(/[-_]/g, ' ')) : value);
 }
 function equipmentNodeLabel(node: EquipmentPackageNode): string {
   if (node.type === 'AND') return (node.children ?? []).map(equipmentNodeLabel).filter((value) => value.length > 0).join(', ') || 'Package';
+  if (node.type === 'OR') return getEquipmentOptionContents(node).join(', ');
   if (node.type === 'linked') return node.item?.name ?? `Item ${node.key?.split('.').at(-1) ?? 'source'}`;
   if (node.type === 'currency') return node.currency ? `${node.currency.amount} ${node.currency.denomination.toUpperCase()}` : 'Currency';
   if (node.semantic) return `Choose ${node.semantic.category}`;
@@ -510,7 +605,7 @@ export function getSpeciesRenderState(document: CharacterDocument, summary: Spec
     ...(summary.senses === undefined ? {} : { senses: summary.senses }),
     ...(summary.creatureType === undefined ? {} : { creatureType: summary.creatureType }),
     ...(configuration?.size === undefined ? summary.size === undefined ? {} : { size: { options: [...summary.size.sizes], selected: summary.size.sizes.length === 1 ? summary.size.sizes[0] : undefined, required: summary.size.sizes.length > 1 } } : { size: { options: [...configuration.size.options], ...(configuration.size.selected === undefined ? {} : { selected: configuration.size.selected }), required: configuration.size.options.length > 1 } }),
-    ...(summary.features === undefined ? {} : { features: summary.features.filter((feature) => feature.level <= targetLevel) }),
+    ...(summary.features === undefined ? {} : { features: getEligibleSpeciesFeatures(document, summary, targetLevel).map((feature) => ({ ...feature, ...(isSpeciesFeatureSelected(document, feature) ? { selected: true } : {}) })) }),
     automatic: automatic.map(toEntry), pending: pending.map(toEntry),
     dependencies: uniqueDependencies(summary.advancements.filter((entry) => entry.level <= targetLevel).flatMap((entry) => entry.dependencies.map(toDependency).filter((dependency): dependency is SpeciesRenderDependency => dependency !== null))),
     unresolvedDependencies: summary.advancements.flatMap((entry) => entry.dependencies.filter((dependency) => dependency.source === null && !isSupportedSelector(dependency.uuid)).map((dependency) => dependency.uuid)),
@@ -520,7 +615,14 @@ export function getSpeciesRenderState(document: CharacterDocument, summary: Spec
 }
 
 export function getSpeciesFeatureCallouts(state: SpeciesRenderState): SpeciesFeatureRenderCallout[] {
-  return (state.features ?? []).filter((feature) => feature.automatic !== false).map((feature) => ({ name: feature.source.name, ...(feature.description === undefined ? {} : { description: feature.description }), sourcePath: feature.source.sourcePath }));
+  return (state.features ?? []).filter((feature) => feature.automatic !== false || feature.selected === true).map((feature) => ({ name: feature.source.name, ...(feature.description === undefined ? {} : { description: feature.description }), sourcePath: feature.source.sourcePath }));
+}
+
+function isSpeciesFeatureSelected(document: CharacterDocument, feature: SpeciesFeatureSummary): boolean {
+  const choices = document.speciesConfiguration?.choices ?? [];
+  const selections = (feature.entitlements ?? [feature]).flatMap((entitlement) => entitlement.selection === undefined ? [] : [entitlement.selection]);
+  if (selections.some(({ key, value }) => choices.some((choice) => choice.key === key && choice.selected.includes(value)))) return true;
+  return document.speciesConfiguration?.grants.some((grant) => grant.source.id === feature.source.id && grant.source.type === feature.source.type) ?? false;
 }
 
 export function getVisibleSpeciesTraitValues(value: Record<string, unknown> | undefined): SpeciesTraitDisplayValue[] {
@@ -540,7 +642,7 @@ function formatTraitValue(value: unknown): string {
 }
 function humanizeTraitLabel(value: string): string { return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (letter) => letter.toUpperCase()); }
 
-export function renderSpeciesChoiceControls(root: HTMLElement, choices: SpeciesChoiceRenderControl[], configuration: SpeciesConfiguration, onChange: (configuration: SpeciesConfiguration) => void): void {
+export function renderSpeciesChoiceControls(root: HTMLElement, choices: SpeciesChoiceRenderControl[], configuration: SpeciesConfiguration, onChange: (configuration: SpeciesConfiguration) => void, knownLanguages: ReadonlySet<string> = new Set()): void {
   const current = { value: configuration };
   root.createEl('h4', { text: 'Choose your options' });
   for (const choice of choices.filter((entry) => { const sourceChoice = current.value.choices.find((candidate) => candidate.key === entry.key); return sourceChoice === undefined || !isDraconicResistanceChoice(sourceChoice); })) {
@@ -554,9 +656,11 @@ export function renderSpeciesChoiceControls(root: HTMLElement, choices: SpeciesC
       if (damageTypes.length > 0) descriptions.push(`Resistance: ${damageTypes.map(humanizeTraitLabel).join(', ')}`);
       if (selectedDetails !== undefined) selectedDetails.textContent = descriptions.join('\n\n');
     };
+    const selectedLanguageKeys = new Set(choice.selected.filter((value) => value.startsWith('languages:')).map(languageSelectorKey));
+    const options = choice.options.filter((option) => !option.value.startsWith('languages:') || !knownLanguages.has(languageSelectorKey(option.value)) || selectedLanguageKeys.has(languageSelectorKey(option.value)));
     renderRepeatedDropdownChoice(field, {
       count: choice.required,
-      options: choice.options,
+      options,
       selected: choice.selected,
       ariaLabel: (index) => choice.required === 1 ? choice.label : `${choice.label} ${index + 1} of ${choice.required}`,
       unavailableLabel: (value) => `${value} (invalid saved selection)`,
@@ -620,9 +724,9 @@ function renderSpellcastingAbility(root: HTMLElement, choices: SpellChoice[], ch
   });
 }
 
-export function renderSpeciesConfigurationControls(root: HTMLElement, state: SpeciesConfigurationRenderInput, configuration: SpeciesConfiguration, onChange: (configuration: SpeciesConfiguration) => void): void {
+export function renderSpeciesConfigurationControls(root: HTMLElement, state: SpeciesConfigurationRenderInput, configuration: SpeciesConfiguration, onChange: (configuration: SpeciesConfiguration) => void, knownLanguages: ReadonlySet<string> = new Set()): void {
   const configurationRef = { current: configuration };
-  if (state.choices) renderSpeciesChoiceControls(root, state.choices, configurationRef.current, (next) => { configurationRef.current = next; onChange(next); });
+  if (state.choices) renderSpeciesChoiceControls(root, state.choices, configurationRef.current, (next) => { configurationRef.current = next; onChange(next); }, knownLanguages);
   if (state.spellChoices) {
     const update = (nextChoices: SpellChoice[]): void => {
     const changed = nextChoices.find((choice) => {
@@ -745,6 +849,8 @@ export class CharacterView extends ItemView {
       onEdit: () => { void this.editCharacter(); },
       onSectionChange: (nextSection) => { void this.selectSheetSection(nextSection); },
       onToggleEquipment: (entryId, equipped) => this.toggleEquipment(entryId, equipped),
+      onManageCurrency: () => this.openCurrencyModal(),
+      onManageItems: this.document.mutable === undefined ? undefined : () => this.openManageItems(),
       onToggleSpellSlot: (level, spent) => this.toggleSpellSlot(level, spent),
       onToggleSpellUse: (key, spent) => this.toggleSpellUse(key, spent),
       onManageSpells: classSpellLists.length > 0 ? () => this.openManageSpells(sources, classSpellLists) : undefined,
@@ -755,6 +861,7 @@ export class CharacterView extends ItemView {
       onToggleFeatureResource: (key, spent) => this.toggleFeatureResource(key, spent),
       onToggleInspiration: (active) => this.toggleInspiration(active),
       onAdjustHitPoints: () => this.openHitPointAdjustment(),
+      onRest: this.document.mutable === undefined ? undefined : () => this.openRest(sheet, sources),
     });
   }
 
@@ -841,6 +948,86 @@ export class CharacterView extends ItemView {
       if (current === undefined || document.mutable === undefined) throw new Error('Mutable hit-point state is unavailable.');
       return withMutableState(document, { ...document.mutable, hitPoints: adjustHitPoints(current, operation, amount) });
     });
+  }
+
+  private openCurrencyModal(): void {
+    const currency = this.document?.mutable?.inventory.currency;
+    if (currency === undefined) return;
+    new CurrencyModal(this.app, { ...currency }, (operation, denomination, amount) => this.applyCurrencyChange(operation, denomination, amount)).open();
+  }
+
+  private openManageItems(): void {
+    const document = this.document;
+    if (document?.mutable === undefined || document.ruleset === null) return;
+    new ManageItemsModal(this.app, this.sourceIndex, document.ruleset, document.mutable.inventory.items, (changes) => this.applyManagedItems(changes)).open();
+  }
+
+  private applyManagedItems(changes: InventoryItemChanges): void {
+    this.queueUpdate((document) => {
+      if (document.mutable === undefined || document.ruleset === null) throw new Error('Mutable inventory is unavailable.');
+      if (changes.added.some(({ source }) => source.ruleset !== document.ruleset && !(document.ruleset === '2024' && source.ruleset === '2014' && source.pack === 'dnd5e.items'))) throw new Error('Item ruleset does not match the character.');
+      const inventory = applyInventoryItemChanges(document.mutable.inventory, changes);
+      const removed = new Set(changes.removedEntryIds);
+      const entryIds = new Set(inventory.items.map((entry) => entry.entryId));
+      const equipmentStatus = document.mutable.equipmentStatus.filter((status) => !removed.has(status.entryId) && entryIds.has(status.entryId)).map((status) => ({ ...status }));
+      const statusIds = new Set(equipmentStatus.map((status) => status.entryId));
+      for (const entry of inventory.items) if (!statusIds.has(entry.entryId)) equipmentStatus.push({ entryId: entry.entryId, equipped: false, attuned: false });
+      return withMutableState(document, { ...document.mutable, inventory, equipmentStatus });
+    });
+  }
+
+  private applyCurrencyChange(operation: CurrencyOperation, denomination: CurrencyDenomination, amount: number): void {
+    this.queueUpdate((document) => {
+      if (document.mutable === undefined) throw new Error('Mutable currency is unavailable.');
+      const inventory = document.mutable.inventory;
+      const currency = applyCurrencyTransaction(inventory.currency, operation, denomination, amount);
+      return withMutableState(document, { ...document.mutable, inventory: { ...inventory, currency } });
+    });
+  }
+
+  private openRest(sheet: ReturnType<typeof projectCharacterSheet>, sources: CharacterSheetSources): void {
+    const mutable = this.document?.mutable;
+    if (mutable === undefined) return;
+    const compatibilitySource = this.restCompatibilitySource(sources);
+    const compatibility = compatibilitySource === undefined ? undefined : applyLevelOne2024RestCompatibility(mutable, compatibilitySource);
+    const previewState = compatibility?.state ?? mutable;
+    const constitution = sheet.abilities.find((ability) => ability.key === 'con')?.modifier;
+    new RestModal(this.app, previewState, { allowShortRest: this.document?.ruleset === '2024', ...(constitution?.kind === 'available' ? { constitutionModifier: constitution.value } : {}), ...(compatibility?.updateCount ? { compatibilityUpdateCount: compatibility.updateCount } : {}) }, (choice) => this.completeRest(choice, compatibilitySource)).open();
+  }
+
+  private completeRest(choice: RestChoice, compatibilitySource?: RestCompatibilityContext): void {
+    this.queueUpdate((document) => {
+      if (document.mutable === undefined) throw new Error('Mutable character state is unavailable.');
+      if (choice.type === 'short' && document.ruleset !== '2024') throw new Error('Short Rest automation is available only for 2024 characters.');
+      const mutable = compatibilitySource === undefined ? document.mutable : this.applyRestCompatibilityToLatestDocument(document, compatibilitySource);
+      return withMutableState(document, choice.type === 'long' ? applyLongRest(mutable).state : applyShortRest(mutable, choice.input).state);
+    });
+  }
+
+  private restCompatibilitySource(sources: CharacterSheetSources): RestCompatibilityContext | undefined {
+    const document = this.document;
+    const progression = document?.classProgressions?.[0];
+    const classSummary = sources.class;
+    if (document?.ruleset !== '2024' || progression?.targetLevel !== 1 || classSummary === undefined || progression.class.sourcePath !== classSummary.source.sourcePath || !/^d(?:4|6|8|10|12)$/.test(classSummary.hitDie)) return undefined;
+    const completeSources = sources.species !== undefined && sources.background !== undefined;
+    const proficiencyBonus = proficiencyBonusForLevel(1) ?? 2;
+    return {
+      classSourcePath: classSummary.source.sourcePath,
+      classHitDie: classSummary.hitDie,
+      characterLevel: 1,
+      spellSlots: getLevelOneClassProgression(classSummary).spellcasting?.spellSlots ?? [],
+      ...(completeSources ? {
+        resources: collectFinalizationResources(document, classSummary, sources.species!, sources.background!, proficiencyBonus),
+        spellUses: collectFinalizationSpellUses(document, classSummary, sources.species!, 1, sources.background!, proficiencyBonus),
+      } : {}),
+      selectionSignature: restSelectionSignature(document),
+    };
+  }
+
+  private applyRestCompatibilityToLatestDocument(document: CharacterDocument, source: RestCompatibilityContext) {
+    const progression = document.classProgressions?.[0];
+    if (document.ruleset !== '2024' || progression?.targetLevel !== 1 || progression.class.sourcePath !== source.classSourcePath || restSelectionSignature(document) !== source.selectionSignature) throw new Error('The character sources or selections changed while the Rest modal was open.');
+    return applyLevelOne2024RestCompatibility(document.mutable!, source).state;
   }
 
   private toggleSpellSlot(level: number, spent: boolean): void {
@@ -966,13 +1153,28 @@ export class CharacterView extends ItemView {
         } catch { sources.warnings.push(warning); }
       }));
     };
+    const loadSelectedFeatSummaries = async (): Promise<void> => {
+      const references = (document.classProgressions ?? []).flatMap((progression) => progression.selections.flatMap((selection) => {
+        if (selection.kind === 'ability-score' && selection.feat !== undefined) return [selection.feat];
+        if (selection.kind === 'item') return selection.selected.filter((source) => source.type === 'feat');
+        return [];
+      }));
+      if (references.length === 0) return;
+      const summaries = new Map<string, NonNullable<BackgroundSourceSummary['grantedFeat']> | null>();
+      sources.selectedFeatSummaries = summaries;
+      await Promise.all(references.map(async (reference) => {
+        const key = `${reference.sourcePath}:${reference.pack}:${reference.type}:${reference.id}`;
+        try { summaries.set(key, await this.sourceIndex.getFeatSummary(reference, ruleset)); }
+        catch { summaries.set(key, null); }
+      }));
+    };
     const loadToolLabels = async (): Promise<void> => {
       const selectors = new Set<string>();
       const add = (value: string): void => {
         const normalized = value.toLocaleLowerCase().replace(/^tools:/, 'tool:');
         if (normalized.startsWith('tool:') && !normalized.endsWith(':*') && normalized !== 'tool:*') selectors.add(normalized);
       };
-      for (const value of sources.class?.proficiencies?.tools ?? []) add(value);
+      for (const value of getEligibleClassProficiencies(document, sources.class)?.tools ?? []) add(value);
       for (const value of sources.background?.tools ?? []) add(value);
       for (const selection of document.classProgressions?.flatMap((progression) => progression.selections) ?? []) if ('selected' in selection && Array.isArray(selection.selected)) for (const value of selection.selected) if (typeof value === 'string') add(value);
       for (const choice of document.speciesConfiguration?.choices ?? []) for (const value of choice.selected) add(value);
@@ -984,8 +1186,21 @@ export class CharacterView extends ItemView {
       loadBackground(),
       loadInventory(),
       loadSpells(),
+      loadSelectedFeatSummaries(),
     ]);
     await loadToolLabels();
+    const weaponSelectors = new Set(getEligibleClassProficiencies(document, sources.class)?.weapons ?? []);
+    for (const selection of document.classProgressions?.flatMap((progression) => progression.selections) ?? []) if ('selected' in selection && Array.isArray(selection.selected)) for (const value of selection.selected) if (typeof value === 'string' && value.startsWith('weapon:')) weaponSelectors.add(value);
+    for (const choice of document.speciesConfiguration?.choices ?? []) for (const value of choice.selected) if (value.startsWith('weapon:')) weaponSelectors.add(value);
+    sources.weaponLabels = await resolveWeaponLabels(this.sourceIndex, weaponSelectors, ruleset);
+    if ([...(sources.inventoryItems?.values() ?? [])].some((value) => value.kind === 'available' && value.value.itemType.toLocaleLowerCase() === 'weapon')) {
+      try { sources.weaponPropertyDescriptions = await this.sourceIndex.getWeaponPropertyDescriptions(ruleset); }
+      catch { sources.warnings.push('Weapon property descriptions are unavailable.'); }
+      if (ruleset === '2024') {
+        try { sources.weaponMasteryDescriptions = await this.sourceIndex.getWeaponMasteryDescriptions(); }
+        catch { sources.warnings.push('Weapon Mastery descriptions are unavailable.'); }
+      }
+    }
     return sources;
   }
 
@@ -1054,6 +1269,14 @@ export class CharacterView extends ItemView {
       const sources = await this.loadCharacterSheetSources(this.document);
       const readinessErrors = validateCharacterCreationReadiness(this.document, sources);
       if (readinessErrors.length > 0) { this.renderUnavailable(readinessErrors[0]!); return; }
+      const masteryIds = new Set((sources.class?.advancements ?? []).filter((advancement) => advancement.type === 'Trait' && isRecord(advancement.raw.configuration) && advancement.raw.configuration.mode === 'mastery').map((advancement) => advancement.id));
+      const masterySelections = this.document.classProgressions?.[0]?.selections.filter((selection): selection is Extract<ClassAdvancementSelection, { kind: 'trait' }> => selection.kind === 'trait' && masteryIds.has(selection.advancementId)) ?? [];
+      if (masterySelections.length > 0 && this.document.ruleset !== null) {
+        const weapons = await this.sourceIndex.resolveSelector('weapon:*', this.document.ruleset);
+        const training = getEligibleClassProficiencies(this.document, sources.class)?.weapons ?? [];
+        const masteryErrors = masterySelections.flatMap((selection) => validateWeaponMasterySelections(selection.selected, weapons, training));
+        if (masteryErrors.length > 0) { this.renderUnavailable(masteryErrors[0]!); return; }
+      }
       const inventory = await expandInventoryContainers(this.document.inventory ?? emptyInventory(), this.sourceIndex);
       const ruleset = this.document.ruleset!;
       const progression = this.document.classProgressions![0]!;
@@ -1064,15 +1287,17 @@ export class CharacterView extends ItemView {
       ]);
       const abilityResults = calculateAbilityScores(this.document.abilityScores!, sumAbilityBonuses(collectAbilityBonuses(species, classSummary, progression, background, this.document.backgroundChoices?.abilityScores)));
       const levelOne = getLevelOneClassProgression(classSummary);
+      const proficiencyBonus = proficiencyBonusForLevel(progression.targetLevel) ?? levelOne.proficiencyBonus;
       const mutable = createFinalizedMutableCharacterState(inventory, {
+        ruleset,
         classSourcePath: classSummary.source.sourcePath,
         classHitDie: classSummary.hitDie,
         constitutionModifier: abilityResults.con.modifier,
         characterLevel: progression.targetLevel,
-        permanentHitPointModifiers: (species.hitPointModifiers ?? []).map((modifier) => ({ perLevel: modifier.perLevel, sourcePath: modifier.source.sourcePath })),
+        permanentHitPointModifiers: getEligibleSpeciesFeatures(this.document, species).flatMap((feature) => feature.hitPointModifiers ?? []).map((modifier) => ({ perLevel: modifier.perLevel, sourcePath: modifier.source.sourcePath })),
         spellSlots: levelOne.spellcasting?.spellSlots ?? [],
-        spellUses: collectFinalizationSpellUses(this.document, classSummary, species, progression.targetLevel, background, levelOne.proficiencyBonus),
-        resources: collectFinalizationResources(classSummary, species, background, progression.targetLevel, levelOne.proficiencyBonus),
+        spellUses: collectFinalizationSpellUses(this.document, classSummary, species, progression.targetLevel, background, proficiencyBonus),
+        resources: collectFinalizationResources(this.document, classSummary, species, background, proficiencyBonus),
       });
       this.document = await this.store.update(this.file, (document) => withMutableState(document, mutable));
       this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
@@ -1090,6 +1315,21 @@ export class CharacterView extends ItemView {
     }
     const ruleset = this.document!.ruleset;
     const selection = this.document!.abilityScores ?? createDefaultAbilityScores();
+    let standardDraft: StandardArrayDraft = this.document!.abilityScoreDraft?.method !== 'standard-array'
+      ? this.document!.abilityScores?.method === 'standard-array'
+        ? { method: 'standard-array', base: { ...this.document!.abilityScores.base }, manual: { ...this.document!.abilityScores.manual } }
+        : createStandardArrayDraft()
+      : structuredClone(this.document!.abilityScoreDraft);
+    let rolledDraft: RolledAbilityDraft = this.document!.abilityScoreDraft?.method !== 'dice-rolling'
+      ? this.document!.abilityScores?.method === 'dice-rolling'
+        ? { method: 'dice-rolling', base: { ...this.document!.abilityScores.base }, manual: { ...this.document!.abilityScores.manual } }
+        : createRolledAbilityDraft()
+      : structuredClone(this.document!.abilityScoreDraft);
+    let pointBuyDraft: PointBuyDraft = this.document!.abilityScoreDraft?.method === 'point-buy'
+      ? structuredClone(this.document!.abilityScoreDraft)
+      : this.document!.abilityScores?.method === 'point-buy'
+        ? { method: 'point-buy', base: { ...this.document!.abilityScores.base }, manual: { ...this.document!.abilityScores.manual } }
+        : createPointBuyAbilityScores();
     const [species, classSummary, background] = await Promise.all([
       this.sourceIndex.getSpeciesSummary(ruleset, this.document!.origin.sourcePath),
       this.sourceIndex.getClassSummary(ruleset, this.document!.classProgressions[0].class.sourcePath),
@@ -1100,39 +1340,101 @@ export class CharacterView extends ItemView {
     const methodField = root.createDiv({ cls: 'guided-character-sheet__field' });
     methodField.createEl('label', { text: 'Ability score method' });
     const method = methodField.createEl('select');
-    for (const option of getAbilityScoreMethodOptions(this.document!.abilityScores?.method)) { const element = method.createEl('option', { value: option.value, text: option.label }); element.disabled = option.placeholder; element.selected = this.document!.abilityScores === undefined ? option.value === '' : option.value === selection.method; }
+    const selectedMethod = this.document!.abilityScores?.method ?? this.document!.abilityScoreDraft?.method;
+    for (const option of getAbilityScoreMethodOptions(selectedMethod)) { const element = method.createEl('option', { value: option.value, text: option.label }); element.disabled = option.placeholder; element.selected = option.value === (selectedMethod ?? ''); }
     const pointBuyStatus = methodField.createDiv({ cls: 'guided-character-sheet__point-buy-status' });
     const draft: AbilityScoreSelection = structuredClone(selection);
+    if (this.document!.abilityScores === undefined) {
+      draft.method = selectedMethod ?? 'standard-array';
+      const currentDraft = draft.method === 'dice-rolling' ? rolledDraft : draft.method === 'point-buy' ? pointBuyDraft : standardDraft;
+      draft.base = Object.fromEntries(ABILITIES.map((ability) => [ability, currentDraft.base[ability] ?? 0])) as typeof draft.base;
+      draft.manual = { ...currentDraft.manual };
+    }
+    if (selectedMethod === 'dice-rolling') {
+      for (const ability of ABILITIES) if (!isValidRolledBase(rolledDraft.base[ability])) delete rolledDraft.base[ability];
+      for (const ability of ABILITIES) draft.base[ability] = rolledDraft.base[ability] ?? 0;
+    }
     const table = root.createDiv({ cls: 'guided-character-sheet__ability-table' });
-    const status = root.createDiv({ text: validateAbilityScores(draft)[0] ?? 'Changes save automatically.', cls: 'guided-character-sheet__hint' });
+    const rolledStatus = (): string => {
+      const invalid = ABILITIES.find((ability) => rolledDraft.base[ability] !== undefined && !isValidRolledBase(rolledDraft.base[ability]));
+      return invalid === undefined ? `${Object.keys(rolledDraft.base).length} of 6 rolled scores entered. Enter scores from 3 to 18; changes save automatically.` : `Rolled ${abilityLabel(invalid)} base score must be between 3 and 18.`;
+    };
+    const status = root.createDiv({ text: selectedMethod === 'dice-rolling' ? rolledStatus() : selectedMethod === 'point-buy' ? pointBuyStatusText(pointBuyDraft) : this.document!.abilityScores === undefined ? 'Assign each Standard Array value once. Changes save automatically.' : 'Changes save automatically.', cls: 'guided-character-sheet__hint' });
     const updatePointBuyStatus = (): void => { pointBuyStatus.textContent = draft.method === 'point-buy' ? `${pointBuyRemaining(draft.base)} points remaining of 27.` : ''; };
-    const commit = (): void => { draft.method = method.value as AbilityScoreMethod; const errors = validateAbilityScores(draft); status.textContent = errors.length > 0 ? errors[0] : 'Saved'; updatePointBuyStatus(); if (errors.length === 0) this.queueUpdate((document) => withAbilityScores(document, draft)); };
-    const renderTable = (): void => { table.empty(); const header = table.createDiv({ cls: 'guided-character-sheet__ability-row guided-character-sheet__ability-header' }); for (const label of ['Ability', 'Base', 'Bonuses', 'Manual', 'Final', 'Modifier']) header.createSpan({ text: label }); const results = calculateAbilityScores(draft, sumAbilityBonuses(sources)); for (const ability of ABILITIES) this.renderAbilityRow(table, ability, draft, results[ability].sourceBonus, commit); };
+    const commit = (): void => {
+      if (method.value === '') method.value = draft.method;
+      draft.method = method.value as AbilityScoreMethod;
+      if (draft.method === 'standard-array') {
+        standardDraft = { ...standardDraft, manual: { ...draft.manual } };
+        const snapshot = structuredClone(standardDraft);
+        status.textContent = ABILITIES.every((ability) => snapshot.base[ability] !== undefined) ? 'Saved' : `${Object.keys(snapshot.base).length} of 6 scores assigned. Changes save automatically.`;
+        this.queueUpdate((document) => withStandardArrayDraft(document, snapshot));
+      } else if (draft.method === 'dice-rolling') {
+        rolledDraft = { ...rolledDraft, manual: { ...draft.manual } };
+        const snapshot = structuredClone(rolledDraft);
+        status.textContent = ABILITIES.every((ability) => isValidRolledBase(snapshot.base[ability])) ? 'Saved' : rolledStatus();
+        this.queueUpdate((document) => withRolledAbilityDraft(document, snapshot));
+      } else if (draft.method === 'point-buy') {
+        pointBuyDraft = { method: 'point-buy', base: { ...draft.base }, manual: { ...draft.manual } };
+        const remaining = pointBuyRemaining(pointBuyDraft.base);
+        status.textContent = remaining === 0 ? 'Saved' : `Spend exactly 27 points to finish; ${remaining} points remaining.`;
+        const snapshot = structuredClone(pointBuyDraft);
+        this.queueUpdate((document) => withPointBuyDraft(document, snapshot));
+      } else {
+        const errors = validateAbilityScores(draft);
+        status.textContent = errors.length > 0 ? errors[0] : 'Saved';
+        if (errors.length === 0) this.queueUpdate(createAbilityScoreUpdate(draft));
+      }
+      updatePointBuyStatus();
+    };
+    const renderTable = (): void => { table.empty(); const header = table.createDiv({ cls: 'guided-character-sheet__ability-row guided-character-sheet__ability-header' }); for (const label of ['Ability', 'Base', 'Bonuses', 'Manual', 'Final', 'Modifier']) header.createSpan({ text: label }); const results = calculateAbilityScores(draft, sumAbilityBonuses(sources)); for (const ability of ABILITIES) this.renderAbilityRow(table, ability, draft, results[ability].sourceBonus, standardDraft, rolledDraft, (changedAbility, value) => { if (draft.method === 'standard-array' && changedAbility !== undefined) { standardDraft = moveStandardArrayValue(standardDraft, changedAbility, value); for (const current of ABILITIES) draft.base[current] = standardDraft.base[current] ?? 0; method.value = 'standard-array'; } else if (draft.method === 'dice-rolling' && changedAbility !== undefined) { if (value !== undefined && (!Number.isInteger(value) || value <= 0)) { status.textContent = 'Enter a positive whole-number rolled score.'; return; } if (value === undefined) delete rolledDraft.base[changedAbility]; else rolledDraft.base[changedAbility] = value; draft.base[changedAbility] = value ?? 0; method.value = 'dice-rolling'; } else if (draft.method === 'point-buy' && changedAbility !== undefined && value !== undefined) { if (!canAffordPointBuyScore(draft.base, changedAbility, value)) { status.textContent = 'That score would exceed the 27-point Point Buy budget.'; renderTable(); return; } draft.base[changedAbility] = value; method.value = 'point-buy'; } commit(); renderTable(); }); };
     renderTable();
-    method.addEventListener('change', () => { draft.method = method.value as AbilityScoreMethod; if (draft.method === 'standard-array') draft.base = { ...createDefaultAbilityScores().base }; if (draft.method === 'point-buy') draft.base = { ...createPointBuyAbilityScores().base }; if (draft.method === 'dice-rolling') { draft.rolls = Object.fromEntries(ABILITIES.map((ability) => [ability, [10, 10, 10, 10]])); for (const ability of ABILITIES) draft.base[ability] = scoreFromRolls(draft.rolls[ability]!); } renderTable(); commit(); });
+    method.addEventListener('change', () => {
+      draft.method = method.value as AbilityScoreMethod;
+      if (draft.method === 'standard-array') {
+        standardDraft = createStandardArrayDraft();
+        for (const ability of ABILITIES) draft.base[ability] = 0;
+        draft.manual = { ...standardDraft.manual };
+        delete draft.rolls;
+      }
+      if (draft.method === 'point-buy') {
+        pointBuyDraft = createPointBuyAbilityScores();
+        draft.base = { ...pointBuyDraft.base };
+        draft.manual = { ...pointBuyDraft.manual };
+        delete draft.rolls;
+      }
+      if (draft.method === 'dice-rolling') {
+        rolledDraft = createRolledAbilityDraft();
+        for (const ability of ABILITIES) draft.base[ability] = 0;
+        draft.manual = { ...rolledDraft.manual };
+        delete draft.rolls;
+      }
+      renderTable();
+      commit();
+    });
     updatePointBuyStatus();
     this.renderBonusBreakdown(root, sources);
   }
 
-  private renderAbilityRow(root: HTMLElement, ability: Ability, draft: AbilityScoreSelection, sourceBonus: number, commit: () => void): void {
+  private renderAbilityRow(root: HTMLElement, ability: Ability, draft: AbilityScoreSelection, sourceBonus: number, standardDraft: StandardArrayDraft, rolledDraft: RolledAbilityDraft, commit: (changedAbility?: Ability, value?: number) => void): void {
     const row = root.createDiv({ cls: 'guided-character-sheet__ability-row' });
     row.createSpan({ text: abilityLabel(ability) });
-    const base = row.createEl('select');
     const values = draft.method === 'point-buy' ? Array.from({ length: 8 }, (_, index) => index + 8) : [8, 10, 12, 13, 14, 15];
     if (draft.method === 'dice-rolling') {
-      const rolls = draft.rolls?.[ability] ?? [10, 10, 10, 10];
-      const dice = row.createDiv({ cls: 'guided-character-sheet__dice-inputs' });
-      for (const [rollIndex, roll] of rolls.entries()) dice.createEl('input', { type: 'number', value: String(roll), attr: { min: '1', max: '20', 'aria-label': `${abilityLabel(ability)} die ${rollIndex + 1}` } }).addEventListener('change', (event) => { const input = event.target as HTMLInputElement; draft.rolls = { ...(draft.rolls ?? {}), [ability]: [...(draft.rolls?.[ability] ?? [10, 10, 10, 10]).slice(0, 4)] }; const current = draft.rolls[ability]!; current[rollIndex] = Number(input.value); draft.base[ability] = scoreFromRolls(current); commit(); });
-      base.createEl('option', { value: String(draft.base[ability]), text: String(draft.base[ability]) }).selected = true;
+      const base = row.createEl('input', { type: 'number', value: rolledDraft.base[ability] === undefined ? '' : String(rolledDraft.base[ability]), attr: { min: '3', max: '18', step: '1', 'aria-label': `${abilityLabel(ability)} rolled base score`, placeholder: '3–18' } });
+      base.addEventListener('change', () => commit(ability, base.value === '' ? undefined : Number(base.value)));
     } else {
-      for (const value of values) { const option = base.createEl('option', { value: String(value), text: String(value) }); option.selected = draft.base[ability] === value; }
-      base.addEventListener('change', () => { draft.base[ability] = Number(base.value); commit(); });
+      const base = row.createEl('select');
+      if (draft.method === 'standard-array') base.createEl('option', { value: '', text: 'Select a score' }).selected = standardDraft.base[ability] === undefined;
+      for (const value of values) { const option = base.createEl('option', { value: String(value), text: String(value) }); option.selected = draft.method === 'standard-array' ? standardDraft.base[ability] === value : draft.base[ability] === value; if (draft.method === 'point-buy') option.disabled = !canAffordPointBuyScore(draft.base, ability, value); }
+      base.addEventListener('change', () => { if (draft.method === 'standard-array') commit(ability, base.value === '' ? undefined : Number(base.value)); else if (draft.method === 'point-buy') commit(ability, Number(base.value)); else { draft.base[ability] = Number(base.value); commit(); } });
     }
     row.createSpan({ text: sourceBonus === 0 ? '—' : `${sourceBonus > 0 ? '+' : ''}${sourceBonus}` });
     const manual = row.createEl('input', { type: 'number', value: String(draft.manual[ability] ?? 0), attr: { 'aria-label': `${abilityLabel(ability)} manual adjustment`, placeholder: '0' } });
     manual.addEventListener('change', () => { draft.manual[ability] = Number(manual.value) || 0; commit(); });
-    row.createSpan({ text: String(draft.base[ability] + sourceBonus + (draft.manual[ability] ?? 0)), cls: 'guided-character-sheet__ability-final' });
-    row.createSpan({ text: formatModifier(Math.floor((draft.base[ability] + sourceBonus + (draft.manual[ability] ?? 0) - 10) / 2)), cls: 'guided-character-sheet__ability-modifier' });
+    const unassigned = draft.method === 'standard-array' && standardDraft.base[ability] === undefined || draft.method === 'dice-rolling' && rolledDraft.base[ability] === undefined;
+    row.createSpan({ text: unassigned ? '—' : String(draft.base[ability] + sourceBonus + (draft.manual[ability] ?? 0)), cls: 'guided-character-sheet__ability-final' });
+    row.createSpan({ text: unassigned ? '—' : formatModifier(Math.floor((draft.base[ability] + sourceBonus + (draft.manual[ability] ?? 0) - 10) / 2)), cls: 'guided-character-sheet__ability-modifier' });
   }
 
   private renderBonusBreakdown(root: HTMLElement, sources: ReturnType<typeof collectAbilityBonuses>): void {
@@ -1174,7 +1476,7 @@ export class CharacterView extends ItemView {
     const source = { origin: this.document!.origin, summary, grants: built.grants, choices: built.choices, spellChoices: built.spellChoices };
     const restored = this.document!.speciesConfiguration === undefined ? built : restoreSpeciesConfiguration(this.document!.speciesConfiguration, source);
     const configuration = { ...restored, diagnostics: [...restored.diagnostics, ...validateSpeciesConfiguration(restored, { ...source, snapshot })] };
-    this.renderSpeciesSummary(root, getSpeciesRenderState(this.document!, summary, configuration)!, configuration);
+    await this.renderSpeciesSummary(root, getSpeciesRenderState(this.document!, summary, configuration)!, configuration);
   }
 
   private renderComingSoon(root: HTMLElement, message: string): void {
@@ -1216,31 +1518,78 @@ export class CharacterView extends ItemView {
     const configuration = restoreClassConfiguration(selected, { class: selected.class, summary, configuration: built });
     const state = getClassRenderState(this.document!, summary, configuration);
     if (state.kind !== 'class-summary') return;
+    const [backgroundProficiencySource, speciesProficiencySource] = await Promise.all([
+      this.document!.background === undefined
+        ? Promise.resolve(undefined)
+        : (async () => { try { return await this.sourceIndex.getBackgroundSummary(ruleset, this.document!.background!.sourcePath); } catch { return undefined; } })(),
+      this.document!.origin === undefined
+        ? Promise.resolve(undefined)
+        : (async () => { try { return await this.sourceIndex.getSpeciesSummary(ruleset, this.document!.origin!.sourcePath); } catch { return undefined; } })(),
+    ]);
+    const speciesProficiencyConfiguration = speciesProficiencySource === undefined || this.document!.origin === undefined
+      ? undefined
+      : (() => {
+          const speciesBuilt = buildSpeciesConfiguration(speciesProficiencySource, { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion });
+          const speciesSelection = this.document!.speciesConfiguration;
+          return speciesSelection === undefined ? speciesBuilt : restoreSpeciesConfiguration(speciesSelection, { origin: this.document!.origin!, summary: speciesProficiencySource, grants: speciesBuilt.grants, choices: speciesBuilt.choices, spellChoices: speciesBuilt.spellChoices });
+        })();
+    const expertiseProficiencies = collectExpertiseProficiencies({ classSummary: summary, classConfiguration: configuration, background: backgroundProficiencySource, speciesSummary: speciesProficiencySource, speciesConfiguration: speciesProficiencyConfiguration });
     root.createDiv({ text: 'Review what this choice provides before continuing.', cls: 'guided-character-sheet__hint' });
     renderLevelOneProgressionSummary(root, getLevelOneProgressionSummary(summary, configuration), this.document!, configuration);
-    this.renderClassTraits(root, state);
+    const weaponLabels = await resolveWeaponLabels(this.sourceIndex, new Set(state.proficiencies?.weapons ?? []), ruleset);
+    this.renderClassTraits(root, state, weaponLabels);
     this.renderClassCallout(root, 'Overview', true, (content) => renderFoundryOverview(content, summary.overviewHtml, summary.description ?? 'No description is available for this class.'));
     const features = getClassFeatureCallouts(state);
     if (features.length > 0) {
       root.createEl('h4', { text: 'Features', cls: 'guided-character-sheet__features-heading' });
       for (const feature of features) this.renderClassCallout(root, `${feature.name} · Level ${feature.level}`, false, (content) => content.createDiv({ text: feature.description ?? 'No description is available for this feature.' }));
     }
+    const eligibleChoiceIds = new Set(state.choices.map((choice) => choice.advancementId));
+    const selectedFeatReferences = (this.document!.classProgressions?.[0]?.selections ?? []).flatMap((selection) => {
+      if (!eligibleChoiceIds.has(selection.advancementId)) return [];
+      if (selection.kind === 'ability-score' && selection.feat !== undefined) return [selection.feat];
+      if (selection.kind === 'item') return selection.selected.filter((source) => source.type === 'feat');
+      return [];
+    });
+    const selectedFeats = await Promise.all(selectedFeatReferences.map(async (reference) => {
+      try { return await this.sourceIndex.getFeatSummary(reference, ruleset); }
+      catch { return null; }
+    }));
+    const selectedFeatCallouts = new Map<string, NonNullable<typeof selectedFeats[number]> | { source: FoundrySourceReference; description?: string }>();
+    selectedFeatReferences.forEach((reference, index) => {
+      const summary = selectedFeats[index];
+      const key = `${reference.sourcePath}:${reference.pack}:${reference.type}:${reference.id}`;
+      if (selectedFeatCallouts.has(key)) return;
+      selectedFeatCallouts.set(key, summary ?? { source: reference });
+    });
+    if (selectedFeatCallouts.size > 0) {
+      root.createEl('h4', { text: 'Selected feats', cls: 'guided-character-sheet__features-heading' });
+      for (const feat of selectedFeatCallouts.values()) this.renderClassCallout(root, feat.source.name, false, (content) => content.createDiv({ text: feat.description ?? 'Feat source is unavailable.' }));
+    }
     if (configuration.choices.length > 0) {
       const spellQuery = spellCatalogQuery(this.sourceIndex, ruleset);
       const resolvedPools = new Map<string, ClassChoiceDisplayOption[]>();
+      const masteryChoiceIds = new Set(state.choices.filter((choice) => {
+        if (choice.kind !== 'trait') return false;
+        const configuration = summary.advancements.find((entry) => entry.id === choice.advancementId)?.raw.configuration;
+        return isRecord(configuration) && configuration.mode === 'mastery';
+      }).map((choice) => choice.advancementId));
+      const masteryDescriptions = masteryChoiceIds.size === 0 ? new Map<string, string>() : await this.sourceIndex.getWeaponMasteryDescriptions();
       await Promise.all(state.choices.filter((choice): choice is Extract<ClassAdvancementSelection, { kind: 'trait' | 'expertise' }> => choice.kind === 'trait' || choice.kind === 'expertise').flatMap((choice) => (choice.configuredPool ?? []).filter((selector) => selector.endsWith(':*')).map(async (selector) => {
         const items = await this.sourceIndex.resolveSelector(selector, ruleset);
-        const selectorPrefix = selector.slice(0, -2);
-        const resolved = items.map((item) => ({ id: `${selectorPrefix}:${item.id}`, name: item.name, sourcePath: item.sourcePath, source: item, sourceSelector: selector }));
+        const resolved = items.map((item) => classChoiceDisplayOptionFromSource(item, selector, masteryDescriptions));
         resolvedPools.set(choice.advancementId, [...(resolvedPools.get(choice.advancementId) ?? []), ...resolved]);
       })));
       root.createEl('h4', { text: 'Feature selections', cls: 'guided-character-sheet__features-heading' });
-      for (const choice of state.choices) this.renderClassCallout(root, getClassChoiceHeading(configuration, choice), true, (content) => renderClassConfigurationControls(content, configuration, (next, changedSelection) => this.queueUpdate((document) => {
+      const orderedChoices = [...state.choices].sort((left, right) => classChoicePriority(left) - classChoicePriority(right));
+      const weaponTraining = getEligibleClassProficiencies(this.document!, summary)?.weapons ?? [];
+      const knownLanguages = getKnownLanguageKeys(this.document!, { warnings: [], species: speciesProficiencySource, class: summary, background: backgroundProficiencySource });
+      for (const choice of orderedChoices) this.renderClassCallout(root, getClassChoiceHeading(configuration, choice), true, (content) => renderClassConfigurationControls(content, configuration, (next, changedSelection) => this.queueUpdate((document) => {
         const current = document.classProgressions?.[0];
         return current === undefined || changedSelection === undefined
           ? withClassProgression(document, toClassProgressionSelection(next))
           : withClassProgression(document, mergeClassSelection(current, changedSelection));
-      }), choice.advancementId, spellQuery, resolvedPools));
+      }), choice.advancementId, spellQuery, resolvedPools, expertiseProficiencies, weaponTraining, knownLanguages));
     }
     if (state.startingEquipment) {
       const content = this.renderClassCallout(root, 'Starting equipment', true, (content) => {
@@ -1269,6 +1618,7 @@ export class CharacterView extends ItemView {
     const commit = (selection: EquipmentSelection): void => { void this.hydrateEquipmentNodes(summary.roots).then(() => onChange(selection)).catch((error: unknown) => root.createDiv({ text: error instanceof Error ? error.message : String(error), cls: 'guided-character-sheet__warning' })); };
     const render = (parent: HTMLElement, node: EquipmentPackageNode, requirementsOnly = false): void => {
       if (node.type === 'OR') {
+        if (node.children?.length === 1) { render(parent, node.children[0]!, requirementsOnly); return; }
         if (!requirementsOnly) {
           const options = parent.createDiv({ cls: 'guided-character-sheet__equipment-options' });
           options.createEl('h5', { text: 'Available options' });
@@ -1339,12 +1689,12 @@ export class CharacterView extends ItemView {
     }
   }
 
-  private renderClassTraits(root: HTMLElement, state: Extract<ClassRenderState, { kind: 'class-summary' }>): void {
+  private renderClassTraits(root: HTMLElement, state: Extract<ClassRenderState, { kind: 'class-summary' }>, weaponLabels?: ReadonlyMap<string, string>): void {
     const traits = root.createDiv({ cls: 'guided-character-sheet__traits' });
     traits.createEl('h4', { text: 'Core traits' });
     const list = traits.createEl('dl');
     list.createEl('dt', { text: 'Hit die' }); list.createEl('dd', { text: state.hitDie });
-    if (state.proficiencies) for (const [label, values] of [['Armor', state.proficiencies.armor], ['Weapons', state.proficiencies.weapons], ['Saving throws', state.proficiencies.savingThrows], ['Languages', state.proficiencies.languages]] as const) if (values.length > 0) { list.createEl('dt', { text: label }); list.createEl('dd', { text: values.map(selectorLabel).join(', ') }); }
+    if (state.proficiencies) for (const [label, values] of [['Armor', state.proficiencies.armor], ['Weapons', state.proficiencies.weapons], ['Saving throws', state.proficiencies.savingThrows], ['Languages', state.proficiencies.languages]] as const) if (values.length > 0) { list.createEl('dt', { text: label }); list.createEl('dd', { text: [...new Set(values.map((value) => label === 'Weapons' ? weaponLabels?.get(value) ?? selectorLabel(value) : selectorLabel(value)))].join(', ') }); }
   }
 
   private renderClassCallout(root: HTMLElement, label: string, open: boolean, render: (content: HTMLElement) => void): HTMLElement {
@@ -1383,7 +1733,12 @@ export class CharacterView extends ItemView {
     }
     if (languageChoice) {
       root.createEl('h4', { text: 'Feature selections', cls: 'guided-character-sheet__features-heading' });
-      this.renderClassCallout(root, 'Languages', true, (content) => this.renderBackgroundLanguageChoice(content, summary, this.document!.backgroundChoices?.languages ?? [], languageChoice.count));
+      const [classSummary, speciesSummary] = await Promise.all([
+        this.sourceIndex.getClassSummary(ruleset, this.document!.classProgressions![0]!.class.sourcePath),
+        this.sourceIndex.getSpeciesSummary(ruleset, this.document!.origin!.sourcePath),
+      ]);
+      const knownLanguages = getKnownLanguageKeys(this.document!, { warnings: [], species: speciesSummary, class: classSummary, background: summary });
+      this.renderClassCallout(root, 'Languages', true, (content) => this.renderBackgroundLanguageChoice(content, summary, this.document!.backgroundChoices?.languages ?? [], languageChoice.count, knownLanguages));
     }
     if (ruleset === '2024') {
       const abilityConfiguration = buildBackgroundAbilityConfiguration(summary);
@@ -1440,10 +1795,12 @@ export class CharacterView extends ItemView {
     for (const value of values) list.createEl('li', { text: selectorLabel(value) });
   }
 
-  private renderBackgroundLanguageChoice(root: HTMLElement, summary: BackgroundSourceSummary | string[], selected: string[], count: number): void {
+  private renderBackgroundLanguageChoice(root: HTMLElement, summary: BackgroundSourceSummary | string[], selected: string[], count: number, knownLanguages: ReadonlySet<string> = new Set()): void {
     const field = root.createDiv({ cls: 'guided-character-sheet__choice' });
     field.createEl('label', { text: `Choose ${count} languages` });
-    const options = Array.isArray(summary) ? summary.flatMap((value) => languageSelectorOptions(value)) : getBackgroundLanguageOptions(summary);
+    const selectedKeys = new Set(selected.map(languageSelectorKey));
+    const options = (Array.isArray(summary) ? summary.flatMap((value) => languageSelectorOptions(value)) : getBackgroundLanguageOptions(summary))
+      .filter((option) => !knownLanguages.has(languageSelectorKey(option.value)) || selectedKeys.has(languageSelectorKey(option.value)));
     const normalizedSelected = selected.map((value) => options.find((option) => option.value === value || option.value.replace(/^languages:(?:standard|exotic):/, 'languages:') === value)?.value ?? value);
     const status = field.createDiv({ text: normalizedSelected.length === count ? `${count} languages selected.` : `Select ${count - normalizedSelected.length} more language${count - normalizedSelected.length === 1 ? '' : 's'}.` });
     renderRepeatedDropdownChoice(field, {
@@ -1542,7 +1899,7 @@ export class CharacterView extends ItemView {
     select.addEventListener('change', () => { const option = options.find((candidate) => candidate.id === select.value); if (option) { this.activeSection = 'species'; this.queueUpdate((document) => withOrigin(document, option)); } });
   }
 
-  private renderSpeciesSummary(root: HTMLElement, state: SpeciesRenderState & { grants?: SpeciesConfiguration['grants']; choices?: SpeciesChoiceRenderControl[]; warnings?: string[] }, configuration: SpeciesConfiguration): void {
+  private async renderSpeciesSummary(root: HTMLElement, state: SpeciesRenderState & { grants?: SpeciesConfiguration['grants']; choices?: SpeciesChoiceRenderControl[]; warnings?: string[] }, configuration: SpeciesConfiguration): Promise<void> {
     root.createDiv({ text: state.name, cls: 'guided-character-sheet__selected-choice' });
     root.createDiv({ text: 'Review what this choice provides before continuing.', cls: 'guided-character-sheet__hint' });
     this.renderSpeciesTraits(root, state);
@@ -1562,9 +1919,16 @@ export class CharacterView extends ItemView {
       root.createEl('h4', { text: 'Features', cls: 'guided-character-sheet__features-heading' });
       for (const feature of features) this.renderSpeciesFeatureCallout(root, feature);
     }
-    if (state.pending.length > 0 || state.choices && state.choices.length > 0 || state.warnings && state.warnings.length > 0 || configuration.spellChoices.length > 0 || configuration.spellcastingAbility !== undefined && configuration.spellcastingAbility.options.length > 1) this.renderSpeciesCallout(root, 'Species choices', true, (content) => {
-      renderSpeciesConfigurationControls(content, { choices: state.choices, spellChoices: getAvailableSpeciesSpellChoices(configuration), spellcastingAbility: configuration.spellcastingAbility, warnings: state.warnings, unresolvedWarnings: state.unresolvedWarnings }, configuration, (next) => this.queueUpdate((document) => withSpeciesConfiguration(document, next)));
-    });
+    if (state.pending.length > 0 || state.choices && state.choices.length > 0 || state.warnings && state.warnings.length > 0 || configuration.spellChoices.length > 0 || configuration.spellcastingAbility !== undefined && configuration.spellcastingAbility.options.length > 1) {
+      const [classSummary, backgroundSummary] = await Promise.all([
+        this.document!.classProgressions?.[0] === undefined ? Promise.resolve(undefined) : this.sourceIndex.getClassSummary(this.document!.ruleset!, this.document!.classProgressions[0].class.sourcePath).catch(() => undefined),
+        this.document!.background === undefined ? Promise.resolve(undefined) : this.sourceIndex.getBackgroundSummary(this.document!.ruleset!, this.document!.background.sourcePath).catch(() => undefined),
+      ]);
+      const knownLanguages = getKnownLanguageKeys(this.document!, { warnings: [], species: undefined, class: classSummary, background: backgroundSummary });
+      this.renderSpeciesCallout(root, 'Species choices', true, (content) => {
+        renderSpeciesConfigurationControls(content, { choices: state.choices, spellChoices: getAvailableSpeciesSpellChoices(configuration), spellcastingAbility: configuration.spellcastingAbility, warnings: state.warnings, unresolvedWarnings: state.unresolvedWarnings }, configuration, (next) => this.queueUpdate((document) => withSpeciesConfiguration(document, next)), knownLanguages);
+      });
+    }
     for (const warning of state.unresolvedWarnings) root.createDiv({ text: warning, cls: 'guided-character-sheet__warning' });
   }
 
@@ -1682,25 +2046,44 @@ export async function resolveToolLabels(sourceIndex: SourceIndex, selectors: Rea
   return labels;
 }
 
+export async function resolveWeaponLabels(sourceIndex: SourceIndex, selectors: ReadonlySet<string>, ruleset: CharacterRuleset): Promise<ReadonlyMap<string, string>> {
+  const labels = new Map<string, string>();
+  const specific = [...selectors].filter((selector) => selector.startsWith('weapon:') && !['weapon:sim', 'weapon:mar', 'weapon:*'].includes(selector));
+  if (specific.length === 0) return labels;
+  try {
+    const items = await sourceIndex.resolveSelector('weapon:*', ruleset);
+    for (const selector of specific) {
+      const key = selector.split(':').at(-1)?.toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
+      const match = items.find((item) => [item.subcategory, item.identifier, item.id].some((value) => value?.toLocaleLowerCase().replace(/[^a-z0-9]/g, '') === key));
+      if (match !== undefined) labels.set(selector, match.name);
+    }
+  } catch { /* Keep the readable fallback when source data is unavailable. */ }
+  return labels;
+}
+
 function speciesSizeLabel(value: string): string { return ({ tiny: 'Tiny', sm: 'Small', med: 'Medium', lg: 'Large', huge: 'Huge', grg: 'Gargantuan' }[value] ?? value); }
 
-function hasEquipmentChoice(nodes: EquipmentPackageNode[]): boolean { return nodes.some((node) => node.type === 'OR' || node.children !== undefined && hasEquipmentChoice(node.children)); }
+function hasEquipmentChoice(nodes: EquipmentPackageNode[]): boolean { return nodes.some((node) => node.type === 'OR' && (node.children?.length ?? 0) > 1 || node.children !== undefined && hasEquipmentChoice(node.children)); }
 export function validateCharacterCreationReadiness(document: CharacterDocument, sources: CharacterSheetSources): string[] {
   const errors: string[] = [];
   if (document.ruleset === null) errors.push('Choose a ruleset before creating the character.');
   if (document.origin === undefined) errors.push('Choose a species before creating the character.');
   if (document.classProgressions?.length !== 1) errors.push('Choose exactly one class before creating the character.');
   if (document.background === undefined) errors.push('Choose a background before creating the character.');
-  if (document.abilityScores === undefined) errors.push('Assign ability scores before creating the character.');
+  if (document.abilityScores === undefined) errors.push(document.abilityScoreDraft?.method === 'dice-rolling' ? 'Enter all six rolled scores between 3 and 18 before creating the character.' : document.abilityScoreDraft?.method === 'point-buy' ? 'Spend exactly 27 points on Point Buy before creating the character.' : document.abilityScoreDraft === undefined ? 'Assign ability scores before creating the character.' : 'Complete all six Standard Array assignments before creating the character.');
+  else if (document.abilityScores.method === 'dice-rolling') for (const ability of ABILITIES) if (!isValidRolledBase(document.abilityScores.base[ability])) errors.push(`Rolled ${abilityLabel(ability)} base score must be between 3 and 18.`);
   if (document.inventory === undefined) errors.push('Choose starting equipment before creating the character.');
   if (sources.species === undefined) errors.push('Species source is unavailable.'); if (sources.class === undefined) errors.push('Class source is unavailable.'); if (sources.background === undefined) errors.push('Background source is unavailable.');
   if (errors.length > 0 || document.ruleset === null || document.abilityScores === undefined) return errors;
   const snapshot: SourceSnapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: document.foundry.sourceBranch, commit: document.foundry.sourceCommit, systemVersion: document.foundry.systemVersion };
+  let restoredSpeciesConfiguration: SpeciesConfiguration | undefined;
+  let restoredClassConfiguration: ClassConfiguration | undefined;
   if (sources.species !== undefined && document.origin !== undefined) {
     const summary = { ...sources.species, source: { ...sources.species.source, identifier: sources.species.source.identifier ?? document.origin.identifier } };
     const built = buildSpeciesConfiguration(summary, snapshot);
     const source = { origin: document.origin, summary, grants: built.grants, choices: built.choices, spellChoices: built.spellChoices };
     const restored = document.speciesConfiguration === undefined ? built : restoreSpeciesConfiguration(document.speciesConfiguration, source);
+    restoredSpeciesConfiguration = restored;
     errors.push(...validateSpeciesConfiguration(restored, { ...source, snapshot }));
   }
   if (sources.class !== undefined && document.classProgressions?.length === 1) {
@@ -1708,11 +2091,14 @@ export function validateCharacterCreationReadiness(document: CharacterDocument, 
     try {
       const built = buildClassConfiguration(sources.class, snapshot, progression.targetLevel);
       const restored = restoreClassConfiguration(progression, { class: progression.class, summary: sources.class, configuration: built, snapshot });
+      restoredClassConfiguration = restored;
       errors.push(...validateClassConfiguration(restored, { class: progression.class, summary: sources.class, configuration: built, snapshot }));
     } catch (error) {
       errors.push(error instanceof Error ? error.message : 'Unable to validate class configuration.');
     }
-    const proficiencySkills = new Set<string>([...(sources.class.proficiencies?.skills ?? []), ...(sources.background?.skills ?? []), ...(document.speciesConfiguration?.choices.flatMap((choice) => choice.selected) ?? []), ...progression.selections.flatMap((selection) => selection.kind === 'trait' ? selection.selected : [])].filter((value) => value.startsWith('skills:')).map((value) => value.slice('skills:'.length)));
+    const expertiseProficiencies = restoredClassConfiguration === undefined
+      ? []
+      : collectExpertiseProficiencies({ classSummary: sources.class, classConfiguration: restoredClassConfiguration, background: sources.background, speciesSummary: sources.species, speciesConfiguration: restoredSpeciesConfiguration });
     const expertiseAdvancements = sources.class.advancements.filter((advancement) => {
       const configuration = isRecord(advancement.raw.configuration) ? advancement.raw.configuration : undefined;
       return advancement.type === 'Trait' && advancement.level <= progression.targetLevel && (advancement.classRestriction === undefined || advancement.classRestriction === 'primary') && configuration?.mode === 'expertise';
@@ -1720,13 +2106,13 @@ export function validateCharacterCreationReadiness(document: CharacterDocument, 
     for (const advancement of expertiseAdvancements) {
       const configuration = isRecord(advancement.raw.configuration) ? advancement.raw.configuration : undefined;
       const expected = configuration === undefined ? undefined : typeof configuration.choices === 'number' ? configuration.choices : Array.isArray(configuration.choices) && isRecord(configuration.choices[0]) && typeof configuration.choices[0].count === 'number' ? configuration.choices[0].count : isRecord(configuration.choices) && isRecord(configuration.choices['1']) && typeof configuration.choices['1'].count === 'number' ? configuration.choices['1'].count : undefined;
-      const selection = progression.selections.find((candidate): candidate is Extract<ClassAdvancementSelection, { kind: 'expertise' }> => candidate.kind === 'expertise' && candidate.advancementId === advancement.id);
+      const selection = (restoredClassConfiguration?.selections ?? progression.selections).find((candidate): candidate is Extract<ClassAdvancementSelection, { kind: 'expertise' }> => candidate.kind === 'expertise' && candidate.advancementId === advancement.id);
       if (selection === undefined) {
         if (expected !== undefined) errors.push(`Choose exactly ${expected} expertise skill${expected === 1 ? '' : 's'}.`);
         continue;
       }
       if (expected !== undefined && selection.selected.length !== expected) errors.push(`Choose exactly ${expected} expertise skill${expected === 1 ? '' : 's'}.`);
-      for (const value of selection.selected) if (value.startsWith('skills:') && !proficiencySkills.has(value.slice('skills:'.length))) errors.push(`Expertise requires proficiency in ${selectorLabel(value)}.`);
+      errors.push(...validateExpertiseSelections(selection.selected, getExpertisePool(advancement), expertiseProficiencies, selectorLabel));
     }
   }
   if (document.ruleset === '2024' && sources.background !== undefined) {
@@ -1746,29 +2132,56 @@ export function validateCharacterCreationReadiness(document: CharacterDocument, 
     if (new Set(keys).size !== keys.length) errors.push('Background languages must be unique.');
     if (keys.some((key) => fixed.has(key) || !allowed.has(key))) errors.push('Saved background language selection is not allowed by the current source.');
   }
+  const known = new Set<string>([
+    ...(sources.class?.proficiencies?.languages ?? []),
+    ...(sources.background?.languages ?? []),
+  ].map(languageSelectorKey));
+  known.add('common');
+  const targetLevel = document.classProgressions?.[0]?.targetLevel ?? 1;
+  for (const advancement of sources.species?.advancements ?? []) if (advancement.level <= targetLevel) {
+    const configured = advancement.raw.configuration;
+    if (isRecord(configured) && Array.isArray(configured.grants)) for (const value of configured.grants) if (typeof value === 'string' && value.startsWith('languages:')) known.add(languageSelectorKey(value));
+  }
+  let duplicateLanguage = false;
+  const addSelectedLanguage = (value: string): void => {
+    if (!value.startsWith('languages:')) return;
+    const key = languageSelectorKey(value);
+    if (known.has(key)) duplicateLanguage = true;
+    known.add(key);
+  };
+  for (const value of getCurrentLevelSavedLanguageChoices(document, sources)) addSelectedLanguage(value);
+  for (const value of document.backgroundChoices?.languages ?? []) addSelectedLanguage(value);
+  if (duplicateLanguage) errors.push('Language choices must be unique across species, class, and background.');
   errors.push(...validateAbilityScores(document.abilityScores)); return [...new Set(errors)];
 }
-function collectFinalizationResources(classSummary: ClassSourceSummary, species: SpeciesSourceSummary, background: BackgroundSourceSummary, targetLevel: number, proficiencyBonus: number): Array<{ key: string; current: number; maximum: number; reset: 'none' | 'short-rest' | 'long-rest' }> {
-  const resources = new Map<string, { key: string; current: number; maximum: number; reset: 'none' | 'short-rest' | 'long-rest' }>();
-  const add = (key: string, uses: { maximum?: string | number; recovery: Array<{ period: string }> } | undefined): void => {
+export function collectFinalizationResources(document: CharacterDocument, classSummary: ClassSourceSummary, species: SpeciesSourceSummary, background: BackgroundSourceSummary, proficiencyBonus: number): CharacterResource[] {
+  const resources = new Map<string, CharacterResource>();
+  const classLevel = document.classProgressions?.find((progression) => progression.class.sourcePath === classSummary.source.sourcePath)?.targetLevel ?? 0;
+  const classScales = getEligibleClassScales(document, classSummary);
+  const add = (key: string, uses: FoundryUsesSummary | undefined, classResource = false): void => {
     const reset = recoverableResetForUses(uses);
     if (reset === undefined) return;
+    const scaleValue = classResource && typeof uses?.maximum === 'string' && uses.maximum.startsWith('@scale.')
+      ? resolveFeatureScaleLookup(uses.maximum, { classIdentifier: classSummary.source.identifier, targetLevel: classLevel, scales: classScales }).value
+      : undefined;
     const maximum = typeof uses?.maximum === 'number'
       ? uses.maximum
       : typeof uses?.maximum === 'string' && /^\d+$/.test(uses.maximum) ? Number(uses.maximum)
-        : uses?.maximum === '@prof' ? proficiencyBonus : undefined;
+        : uses?.maximum === '@prof' ? proficiencyBonus
+          : scaleValue?.type === 'number' ? scaleValue.value : undefined;
     if (maximum === undefined || !Number.isInteger(maximum) || maximum < 0) return;
-    resources.set(key, { key, current: maximum, maximum, reset });
+    const recovery = mutableRecoveryProfiles(uses);
+    resources.set(key, { key, current: maximum, maximum, reset, ...(recovery.length === 0 ? {} : { recovery }) });
   };
-  for (const feature of classSummary.features ?? []) if (feature.level <= targetLevel) {
-    collectFeatureResource(feature.source.sourcePath, feature.uses, feature.activities, add);
+  for (const feature of getEligibleClassFeatures(document, classSummary)) {
+    collectFeatureResource(feature.source.sourcePath, feature.uses, feature.activities, (key, uses) => add(key, uses, true));
   }
-  for (const feature of species.features ?? []) if (feature.level <= targetLevel) collectFeatureResource(feature.source.sourcePath, feature.uses, feature.activities, add);
+  for (const feature of getEligibleSpeciesFeatures(document, species)) collectFeatureResource(feature.source.sourcePath, feature.uses, feature.activities, add);
   for (const feature of background.features ?? []) collectFeatureResource(feature.source.sourcePath, feature.uses, feature.activities, add);
   return [...resources.values()];
 }
-export function collectFinalizationSpellUses(document: CharacterDocument, classSummary: ClassSourceSummary, species: SpeciesSourceSummary, targetLevel: number, background?: BackgroundSourceSummary, proficiencyBonus?: number): Array<{ key: string; current: number; maximum: number; reset: 'none' | 'short-rest' | 'long-rest' }> {
-  const uses = new Map<string, { key: string; current: number; maximum: number; reset: 'none' | 'short-rest' | 'long-rest' }>();
+export function collectFinalizationSpellUses(document: CharacterDocument, classSummary: ClassSourceSummary, species: SpeciesSourceSummary, targetLevel: number, background?: BackgroundSourceSummary, proficiencyBonus?: number): CharacterSpellUse[] {
+  const uses = new Map<string, CharacterSpellUse>();
   const add = (reference: { sourcePath: string; pack: string; type: string; id: string }, raw: Record<string, unknown> | undefined): void => {
     const configuration = raw !== undefined && isRecord(raw.configuration) ? raw.configuration : undefined;
     const spell = configuration !== undefined && isRecord(configuration.spell) ? configuration.spell : undefined;
@@ -1780,7 +2193,8 @@ export function collectFinalizationSpellUses(document: CharacterDocument, classS
     const per = typeof value.per === 'string' ? value.per : undefined;
     const reset = per === undefined ? 'none' : mutableResetForPeriod(per);
     if (reset === undefined) return;
-    uses.set(key, { key, current: maximum, maximum, reset });
+    const recovery = reset === 'short-rest' || reset === 'long-rest' ? [{ period: reset, type: 'recover-all' as const }] : [];
+    uses.set(key, { key, current: maximum, maximum, reset, ...(recovery.length === 0 ? {} : { recovery }) });
   };
   const classAdvancementIds = new Set([...classSummary.advancements.filter((entry) => entry.level <= targetLevel).map((entry) => entry.id), ...getLevelOneDerivedSpellChoices(classSummary).map((entry) => entry.advancementId)]);
   for (const selection of document.classProgressions?.flatMap((entry) => entry.selections) ?? []) if (selection.kind === 'spell' && classAdvancementIds.has(selection.advancementId)) for (const reference of selection.selected) add(reference, selection.raw);
@@ -1789,13 +2203,29 @@ export function collectFinalizationSpellUses(document: CharacterDocument, classS
   for (const choice of document.backgroundChoices?.grantedFeat?.spellChoices ?? []) if (choice.kind === 'spell') for (const reference of choice.selected) add(reference, background?.grantedFeat?.advancements.find((entry) => entry.id === choice.advancementId)?.raw);
   return [...uses.values()];
 }
-function collectFeatureResource(sourcePath: string, uses: { maximum?: string | number; recovery: Array<{ period: string }> } | undefined, activities: Array<{ id: string; uses?: { maximum?: string | number; recovery: Array<{ period: string }> } }> | undefined, add: (key: string, uses: { maximum?: string | number; recovery: Array<{ period: string }> } | undefined) => void): void {
+function collectFeatureResource(sourcePath: string, uses: FoundryUsesSummary | undefined, activities: Array<{ id: string; uses?: FoundryUsesSummary }> | undefined, add: (key: string, uses: FoundryUsesSummary | undefined) => void): void {
   add(`feature:${sourcePath}`, uses);
   for (const activity of activities ?? []) add(`feature:${sourcePath}:activity:${activity.id}`, activity.uses);
 }
-function isReadyForCharacterCreation(document: CharacterDocument): boolean {
-  return document.ruleset !== null && document.origin !== undefined && document.classProgressions?.length === 1 && document.background !== undefined && document.abilityScores !== undefined && document.inventory !== undefined;
+
+function restSelectionSignature(document: CharacterDocument): string {
+  return JSON.stringify({
+    ruleset: document.ruleset,
+    origin: document.origin,
+    speciesConfiguration: document.speciesConfiguration,
+    classProgressions: document.classProgressions,
+    background: document.background,
+    backgroundChoices: document.backgroundChoices,
+  });
 }
+function isReadyForCharacterCreation(document: CharacterDocument): boolean {
+  return document.ruleset !== null && document.origin !== undefined && document.classProgressions?.length === 1 && document.background !== undefined && hasValidCreationAbilityScores(document) && document.inventory !== undefined;
+}
+
+function hasValidCreationAbilityScores(document: CharacterDocument): boolean {
+  return document.abilityScores !== undefined && (document.abilityScores.method !== 'dice-rolling' || ABILITIES.every((ability) => isValidRolledBase(document.abilityScores?.base[ability]))) && (document.abilityScores.method !== 'point-buy' || pointBuyRemaining(document.abilityScores.base) === 0);
+}
+function pointBuyStatusText(draft: PointBuyDraft): string { const remaining = pointBuyRemaining(draft.base); return remaining === 0 ? 'Point Buy complete: exactly 27 points spent.' : `Spend exactly 27 points; ${remaining} points remaining.`; }
 function abilityLabel(ability: Ability | string): string { return ({ str: 'Strength', dex: 'Dexterity', con: 'Constitution', int: 'Intelligence', wis: 'Wisdom', cha: 'Charisma' } as const)[ability as Ability] ?? ability; }
 function backgroundLanguageLabel(value: string): string { const key = value.split(':').at(-1) ?? value; return selectorLabel(`languages:${key}`); }
 function formatModifier(value: number): string { return value >= 0 ? `+${value}` : String(value); }

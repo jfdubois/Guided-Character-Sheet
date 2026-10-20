@@ -99,14 +99,14 @@ export function createSpeciesConfiguration(origin: CharacterOriginReference, sna
   };
 }
 
-export function buildSpeciesConfiguration(summary: SpeciesSourceSummary, snapshot: SourceSnapshot): SpeciesConfiguration {
+export function buildSpeciesConfiguration(summary: SpeciesSourceSummary, snapshot: SourceSnapshot, targetLevel = 1): SpeciesConfiguration {
   const configuration = createSpeciesConfiguration({ sourcePath: summary.source.sourcePath, identifier: summary.source.identifier ?? '', id: summary.source.id }, snapshot);
   const grants: SpeciesGrant[] = [];
   const grantSources = new Set<string>();
   const choices: SpeciesChoice[] = [];
   const spellAdvancements: SpeciesSourceSummary['advancements'] = [];
   const diagnostics: string[] = [];
-  for (const advancement of summary.advancements) {
+  for (const advancement of summary.advancements.filter((entry) => entry.level <= targetLevel)) {
     const key = `species:${advancement.id}`;
     const rawConfiguration = isRecord(advancement.raw.configuration) ? advancement.raw.configuration : {};
     if (advancement.type === 'ItemGrant' && isRecord(rawConfiguration.spell) && advancement.dependencies.some((dependency) => dependency.source?.type === 'spell')) continue;
@@ -157,11 +157,11 @@ export function buildSpeciesConfiguration(summary: SpeciesSourceSummary, snapsho
     choices.push({ key, level: advancement.level, label: choiceLabel(advancement, pool), count, source: { id: advancement.id, type: advancement.type }, options, selected: [], ...(advancement.requiresChoice === undefined ? {} : { requiresChoice: advancement.requiresChoice }), raw: advancement.raw });
   }
   const spellChoices = projectSpeciesSpellChoices(summary, spellAdvancements, diagnostics);
-  const spellGrants: SpeciesSpellGrant[] = (summary.spellGrants ?? []).map((grant) => ({ ...grant, spells: grant.spells.map((spell) => ({ ...spell })), abilityOptions: [...grant.abilityOptions] }));
-  const eligibleAbilityGrants = spellGrants.filter((grant) => grant.level <= 1 && grant.abilityOptions.length > 0);
+  const spellGrants: SpeciesSpellGrant[] = (summary.spellGrants ?? []).filter((grant) => grant.level <= targetLevel).map((grant) => ({ ...grant, spells: grant.spells.map((spell) => ({ ...spell })), abilityOptions: [...grant.abilityOptions] }));
+  const eligibleAbilityGrants = spellGrants.filter((grant) => grant.abilityOptions.length > 0);
   const abilityOptions = commonAbilityOptions(eligibleAbilityGrants);
   const spellcastingAbility = eligibleAbilityGrants.length === 0 ? undefined : { advancementIds: eligibleAbilityGrants.map((grant) => grant.advancementId), options: abilityOptions, ...(abilityOptions.length === 1 ? { selected: abilityOptions[0] } : {}) };
-  const size = summary.size === undefined ? undefined : {
+  const size = summary.size === undefined || summary.size.level > targetLevel ? undefined : {
     advancementId: summary.size.advancementId,
     level: summary.size.level,
     options: [...summary.size.sizes],
@@ -397,14 +397,14 @@ export function toSpeciesConfigurationSelection(configuration: SpeciesConfigurat
   };
 }
 
-export function restoreSpeciesConfiguration(selection: SpeciesConfigurationSelection, source: SpeciesConfigurationSource): SpeciesConfiguration {
+export function restoreSpeciesConfiguration(selection: SpeciesConfigurationSelection, source: SpeciesConfigurationSource, targetLevel = 1): SpeciesConfiguration {
   const projected = createSpeciesConfiguration(selection.origin, {
     owner: 'foundryvtt', repo: 'dnd5e', branch: selection.foundry.sourceBranch,
     commit: selection.foundry.sourceCommit, systemVersion: selection.foundry.systemVersion,
   });
   const currentSpellChoices = source.spellChoices ?? [];
   const currentSpellcastingAbility = source.summary.spellGrants === undefined ? undefined : (() => {
-    const eligible = source.summary.spellGrants.filter((grant) => grant.level <= 1 && grant.abilityOptions.length > 0);
+    const eligible = source.summary.spellGrants.filter((grant) => grant.level <= targetLevel && grant.abilityOptions.length > 0);
     const options = commonAbilityOptions(eligible);
     if (eligible.length === 0) return undefined;
     const advancementIds = selection.spellcastingAbility?.advancementIds ?? eligible.map((grant) => grant.advancementId);
@@ -419,7 +419,9 @@ export function restoreSpeciesConfiguration(selection: SpeciesConfigurationSelec
   }).concat(currentSpellChoices.filter((choice) => !(selection.spellChoices ?? []).some((saved) => saved.key === choice.key)).map((choice) => ({ ...cloneSpellChoice(choice), selected: [], selectedAbility: undefined })));
   return {
     ...projected,
-    grants: selection.grants.map((grant) => ({ key: grant.key, level: 0, label: grant.source.name ?? grant.key, source: { ...grant.source }, raw: {} })),
+    grants: selection.grants
+      .filter((grant) => !source.summary.advancements.some((advancement) => advancement.level > targetLevel && (grant.key.startsWith(`species:${advancement.id}:`) || advancement.dependencies.some((dependency) => dependency.source?.id === grant.source.id && dependency.source.type === grant.source.type))))
+      .map((grant) => ({ key: grant.key, level: source.grants.find((candidate) => candidate.key === grant.key)?.level ?? 0, label: grant.source.name ?? grant.key, source: { ...grant.source }, raw: {} })),
     choices: selection.choices.map((saved) => {
       const current = source.choices.find((choice) => choice.key === saved.key);
       return current === undefined
@@ -427,9 +429,9 @@ export function restoreSpeciesConfiguration(selection: SpeciesConfigurationSelec
         : { ...current, source: { ...saved.source }, selected: [...saved.selected] };
     }).concat(source.choices.filter((choice) => !selection.choices.some((saved) => saved.key === choice.key)).map((choice) => ({ ...choice, selected: [] }))),
     spellChoices: restoredSpellChoices,
-    spellGrants: (source.summary.spellGrants ?? []).map((grant) => ({ ...grant, spells: grant.spells.map((spell) => ({ ...spell })), abilityOptions: [...grant.abilityOptions] })),
+    spellGrants: (source.summary.spellGrants ?? []).filter((grant) => grant.level <= targetLevel).map((grant) => ({ ...grant, spells: grant.spells.map((spell) => ({ ...spell })), abilityOptions: [...grant.abilityOptions] })),
     ...(currentSpellcastingAbility === undefined ? {} : { spellcastingAbility: currentSpellcastingAbility }),
-    ...(source.summary.size === undefined ? {} : { size: {
+    ...(source.summary.size === undefined || source.summary.size.level > targetLevel ? {} : { size: {
       advancementId: selection.size?.advancementId ?? source.summary.size.advancementId,
       level: source.summary.size.level,
       options: [...source.summary.size.sizes],

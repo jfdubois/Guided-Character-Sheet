@@ -1,20 +1,28 @@
 import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
-import { CharacterView, collectFinalizationSpellUses, createAbilityScoreUpdate, getBackgroundFeatureCallouts, getBackgroundLanguageOptions, getBackgroundOverview, getBackgroundRenderState, getCharacterCreationSections, getCharacterRenderState, getClassFeatureCallouts, getClassChoiceHeading, getSelectedOriginId, getSpeciesFeatureCallouts, getSpeciesRenderState, getVisibleSpeciesTraitValues, renderSpeciesConfigurationControls, getClassRenderState, getClassChoiceLabel, renderClassConfigurationControls, getLevelOneProgressionSummary, renderLevelOneProgressionSummary, getSelectedBackgroundLanguageValues, getBackgroundAbilityControlState, renderBackgroundAbilityControls, renderBackgroundGrantedFeatControls, validateCharacterCreationReadiness, shouldRenderClassFeatureSelections, resolveToolLabels } from '../src/character-view';
-import { buildSpeciesConfiguration, createSpeciesConfiguration } from '../src/species-configuration';
+import { CharacterView, collectFinalizationSpellUses, createAbilityScoreUpdate, getBackgroundFeatureCallouts, getBackgroundLanguageOptions, getBackgroundOverview, getBackgroundRenderState, getCharacterCreationSections, getCharacterRenderState, getClassFeatureCallouts, getClassChoiceHeading, getSelectedOriginId, getSpeciesFeatureCallouts, getSpeciesRenderState, getVisibleSpeciesTraitValues, renderSpeciesConfigurationControls, getClassRenderState, getClassChoiceLabel, renderClassConfigurationControls, renderClassChoiceDetails, classChoiceDisplayOptionFromSource, getLevelOneProgressionSummary, renderLevelOneProgressionSummary, getSelectedBackgroundLanguageValues, getBackgroundAbilityControlState, renderBackgroundAbilityControls, renderBackgroundGrantedFeatControls, validateCharacterCreationReadiness, shouldRenderClassFeatureSelections, resolveToolLabels, resolveWeaponLabels, getKnownLanguageKeys } from '../src/character-view';
+import { buildSpeciesConfiguration, createSpeciesConfiguration, toSpeciesConfigurationSelection } from '../src/species-configuration';
 import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from '../src/character-sources';
 import type { CharacterSheetSources } from '../src/character-sheet-model';
 import type { FoundryItemSummary, FoundrySourceReference, FoundrySpellSummary } from '../src/foundry-source-catalog';
 import { createCharacterDocument, parseCharacterDocument, withBackgroundGrantedFeat, withClassProgression, withOrigin, withRuleset, type CharacterDocument } from '../src/character-model';
 import { createDefaultAbilityScores } from '../src/ability-scores';
-import { buildClassConfiguration, restoreClassConfiguration, toClassProgressionSelection, type ClassAdvancementSelection } from '../src/class-configuration';
+import { buildClassConfiguration, restoreClassConfiguration, setClassSelection, toClassProgressionSelection, type ClassAdvancementSelection } from '../src/class-configuration';
 import { buildBackgroundAbilityConfiguration, type BackgroundAbilitySelection } from '../src/background-ability-configuration';
 import type { SpellChoice } from '../src/spell-configuration';
 import { getSpellChoiceQueryFilters, mergeSpellSelections, renderSpellChoiceControls } from '../src/character-view';
 import { buildGrantedFeatConfiguration, restoreGrantedFeatConfiguration, setGrantedFeatSpellChoice, setGrantedFeatSpellcastingAbility, toGrantedFeatSelection, validateGrantedFeatConfiguration, type GrantedFeatSelection } from '../src/granted-feat-configuration';
 import { createPinnedSourceIndex } from './support/pinned-foundry-source';
+import type { InventoryItemChanges } from '../src/inventory';
 
 const snapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' };
+
+describe('weapon source labels', () => {
+  it('resolves distinct proficiency selectors to one pinned weapon name', async () => {
+    const labels = await resolveWeaponLabels(createPinnedSourceIndex(), new Set(['weapon:mar:handcrossbow', 'weapon:handcrossbow']), '2024');
+    expect([...labels.values()]).toEqual(['Hand Crossbow', 'Hand Crossbow']);
+  });
+});
 
 const acolyteSummary: BackgroundSourceSummary = {
   source: { sourcePath: 'packs/_source/origins24/backgrounds/acolyte.yml', pack: 'dnd5e.origins24', type: 'background', id: 'acolyte', identifier: 'acolyte', name: 'Acolyte' },
@@ -69,6 +77,29 @@ function completeSources(background: BackgroundSourceSummary = acolyteSummary): 
 }
 
 describe('character view render state', () => {
+  it('renders specific Rogue weapon grants once and uses a readable source language name', () => {
+    const rendered: string[] = [];
+    const root = createDropdownTestRoot([], rendered);
+    const renderClassTraits = (CharacterView.prototype as unknown as { renderClassTraits(root: HTMLElement, state: unknown): void }).renderClassTraits;
+    renderClassTraits.call({}, root as unknown as HTMLElement, {
+      kind: 'class-summary', hitDie: 'd8', proficiencies: {
+        armor: ['armor:lgt'], savingThrows: ['saves:dex', 'saves:int'],
+        weapons: ['weapon:sim', 'weapon:mar:handcrossbow', 'weapon:mar:rapier', 'weapon:mar:scimitar', 'weapon:mar:shortsword', 'weapon:mar:whip', 'weapon:rapier'],
+        languages: ['languages:exotic:cant'],
+      },
+    });
+
+    const weaponText = rendered[rendered.indexOf('Weapons') + 1];
+    expect(weaponText).toContain('Simple weapons');
+    expect(weaponText).toContain('Rapier');
+    expect(weaponText).toContain('Shortsword');
+    expect(weaponText).toContain('Hand Crossbow');
+    expect(weaponText).not.toContain('Handcrossbow');
+    expect(weaponText?.match(/Rapier/g)).toHaveLength(1);
+    expect(weaponText).not.toContain('Martial weapons');
+    expect(rendered).toContain("Thieves' Cant");
+  });
+
   it('resolves concrete tool selectors to source names and leaves ambiguous matches for model fallback', async () => {
     const calligrapher = { sourcePath: 'calligrapher.yml', pack: 'equipment24', type: 'tool' as const, id: 'calligrapher', identifier: 'calligrapher', name: "Calligrapher's Supplies", ruleset: '2024' as const, itemType: 'tool', magic: false, equippable: false, properties: [] } satisfies FoundryItemSummary;
     const sourceIndex = { resolveSelector: vi.fn(async (selector: string) => selector === 'tool:art:calligrapher' ? [calligrapher] : []) };
@@ -491,6 +522,28 @@ describe('character view render state', () => {
     });
     expect(options.map((option) => option.value)).toEqual(['languages:standard:dwarvish', 'languages:standard:elvish', 'languages:standard:giant', 'languages:standard:gnomish', 'languages:standard:goblin', 'languages:standard:halfling', 'languages:standard:orc', 'languages:standard:sign']);
   });
+  it('excludes languages already granted or selected in other creation sections', () => {
+    const document = completeDocument({ backgroundChoices: { abilityScores: { advancementId: 'asi', assignments: { int: 2, wis: 1 } } } });
+    document.speciesConfiguration = { origin: creationOrigin, foundry: { systemVersion: '6', sourceBranch: '6', sourceCommit: 'a'.repeat(40) }, grants: [], choices: [{ key: 'language', source: { id: 'language', type: 'Trait' }, selected: ['languages:elvish'] }], spellChoices: [] };
+    const source = { ...acolyteSummary, languageChoices: [{ count: 1, pool: ['languages:standard:*'] }] };
+    const known = getKnownLanguageKeys(document, { warnings: [], species: { ...completeSources().species!, advancements: [{ id: 'language', type: 'Trait', level: 1, hint: '', automatic: true, dependencies: [], raw: { configuration: { grants: [] } } }] }, class: { ...completeSources().class!, proficiencies: { armor: [], weapons: [], tools: [], savingThrows: [], languages: ['languages:standard:common'], skills: [], choices: [] } }, background: source });
+    expect(known).toEqual(new Set(['common', 'elvish']));
+    const selects: DropdownTestSelect[] = [];
+    const renderLanguages = (CharacterView.prototype as unknown as { renderBackgroundLanguageChoice(root: HTMLElement, summary: BackgroundSourceSummary, selected: string[], count: number, known: ReadonlySet<string>): void }).renderBackgroundLanguageChoice;
+    renderLanguages.call({ queueUpdate: () => undefined }, createDropdownTestRoot(selects) as unknown as HTMLElement, source, [], 1, known);
+    expect(selects[0]?.options.some((option) => option.value === 'languages:standard:elvish')).toBe(false);
+  });
+  it('ignores species language grants above the saved creation level in filtering and finalization', () => {
+    const document = completeDocument({ classProgressions: [{ ...completeDocument().classProgressions![0]!, targetLevel: 1, selections: [{ advancementId: 'future-class-language', kind: 'trait', selected: ['languages:standard:elvish'], configuredPool: ['languages:standard:*'] }] }], speciesConfiguration: { origin: creationOrigin, foundry: { systemVersion: '6', sourceBranch: '6', sourceCommit: 'a'.repeat(40) }, grants: [], choices: [{ key: 'species:future-language', source: { id: 'future-language', type: 'Trait' }, selected: ['languages:standard:elvish'] }], spellChoices: [] } });
+    const species = { ...completeSources().species!, advancements: [{ id: 'future-language', type: 'Trait', level: 5, hint: '', automatic: false, dependencies: [], raw: { configuration: { grants: ['languages:standard:elvish'] } } }] };
+    const classSummary = { ...completeSources().class!, advancements: [{ id: 'future-class-language', type: 'Trait', level: 5, title: 'Future language', hint: '', dependencies: [], raw: { configuration: { mode: 'default', choices: 1, pool: ['languages:standard:*'] } } }] };
+    expect(getKnownLanguageKeys(document, { warnings: [], species, class: classSummary }).has('elvish')).toBe(false);
+    const summary = { ...acolyteSummary, languageChoices: [{ count: 1, pool: ['languages:standard:*'] }] };
+    const withLanguageChoice = { ...document, backgroundChoices: { ...document.backgroundChoices!, languages: ['languages:standard:elvish'] } };
+    expect(validateCharacterCreationReadiness(withLanguageChoice, { ...completeSources(summary), species, class: classSummary })).not.toContain('Language choices must be unique across species, class, and background.');
+    expect(withLanguageChoice.speciesConfiguration?.choices[0]?.selected).toEqual(['languages:standard:elvish']);
+    expect(withLanguageChoice.classProgressions?.[0]?.selections[0]).toMatchObject({ advancementId: 'future-class-language', selected: ['languages:standard:elvish'] });
+  });
   it('counts only visible background language selections using canonical identity', () => {
     const options = getBackgroundLanguageOptions({
       languages: ['languages:standard:common'],
@@ -511,6 +564,32 @@ describe('character view render state', () => {
     const state = getBackgroundRenderState(document, summary);
     expect(state.kind).toBe('background-summary');
     if (state.kind === 'background-summary') expect(getBackgroundOverview(state)).not.toHaveProperty('feat');
+  });
+  it('shows a 2024 background-granted feat and its description as a creation feature', () => {
+    const summary: BackgroundSourceSummary = { ...acolyteSummary, grantedFeat: { source: { sourcePath: 'packs/_source/feats24/origin-feats/alert.yml', pack: 'dnd5e.feats24', type: 'feat', id: 'alert', name: 'Alert' }, description: 'Initiative Proficiency. Add your Proficiency Bonus.', advancements: [] } };
+    const state = getBackgroundRenderState(withRuleset(createCharacterDocument('Ayla', snapshot), '2024'), summary);
+    expect(state.kind).toBe('background-summary');
+    if (state.kind === 'background-summary') expect(getBackgroundFeatureCallouts(state)).toContainEqual({ name: 'Alert', description: 'Initiative Proficiency. Add your Proficiency Bonus.' });
+  });
+  it('shows every pinned 2024 background-granted feat with its source description', async () => {
+    const index = createPinnedSourceIndex();
+    for (const path of [
+      'packs/_source/origins24/backgrounds/acolyte.yml',
+      'packs/_source/origins24/backgrounds/criminal.yml',
+      'packs/_source/origins24/backgrounds/sage.yml',
+      'packs/_source/origins24/backgrounds/soldier.yml',
+    ]) {
+      const summary = await index.getBackgroundSummary('2024', path);
+      const document = createCharacterDocument('Ayla', snapshot);
+      document.background = { sourcePath: path, identifier: summary.source.identifier ?? '', id: summary.source.id };
+      const state = getBackgroundRenderState(document, summary);
+      expect(state.kind).toBe('background-summary');
+      if (state.kind === 'background-summary') {
+        const featCallouts = getBackgroundFeatureCallouts(state).filter((callout) => callout.description !== undefined);
+        expect(featCallouts.length).toBeGreaterThan(0);
+        expect(featCallouts[0]?.description).toBeTruthy();
+      }
+    }
   });
   it('projects a presentation-ready 2024 background overview', () => {
     const document = withRuleset(createCharacterDocument('Ayla', snapshot), '2024');
@@ -607,18 +686,23 @@ describe('character view render state', () => {
 
   it('accepts expertise from proficient class/background/species skills and rejects a non-proficient skill', () => {
     const rogueClass = { ...completeSources().class!, source: { ...completeSources().class!.source, identifier: 'rogue', name: 'Rogue', sourcePath: 'packs/_source/classes24/rogue.yml' }, proficiencies: { armor: [], weapons: [], tools: [], savingThrows: ['saves:dex'], languages: [], skills: [], choices: [] }, advancements: [{ id: 'skill-proficiencies', type: 'Trait', level: 1, title: 'Skill proficiencies', hint: '', dependencies: [], raw: { configuration: { mode: 'default', choices: 1, pool: ['skills:*'] } } }, { id: 'expertise', type: 'Trait', level: 1, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: 2, pool: ['skills:*'] } } }, { id: 'later-expertise', type: 'Trait', level: 6, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: 2, pool: ['skills:*'] } } }] };
+    const speciesSummary = { ...completeSources().species!, advancements: [{ id: 'species-skill', type: 'Trait', level: 1, hint: '', automatic: false, dependencies: [{ uuid: 'skills:per', source: null }], raw: { configuration: { choices: 1, pool: ['skills:per'] } } }] };
+    const speciesBuilt = buildSpeciesConfiguration(speciesSummary, snapshot);
+    const speciesChoice = speciesBuilt.choices[0]!;
+    const speciesSelection = toSpeciesConfigurationSelection({ ...speciesBuilt, choices: [{ ...speciesChoice, selected: ['skills:per'] }] });
     const skillSelection: ClassAdvancementSelection = { advancementId: 'skill-proficiencies', kind: 'trait', configuredPool: ['skills:*'], selected: ['skills:arc'] };
     const expertiseSelection: Extract<ClassAdvancementSelection, { kind: 'expertise' }> = { advancementId: 'expertise', kind: 'expertise', mode: 'expertise', configuredPool: ['skills:*'], selected: ['skills:arc', 'skills:ins', 'skills:ste'] };
-    const document = completeDocument({ classProgressions: [{ class: { ...creationClass, identifier: 'rogue', sourcePath: 'packs/_source/classes24/rogue.yml' }, targetLevel: 1, selections: [skillSelection, expertiseSelection] }], speciesConfiguration: { origin: creationOrigin, foundry: { systemVersion: snapshot.systemVersion, sourceBranch: snapshot.branch, sourceCommit: snapshot.commit }, grants: [], choices: [{ key: 'skills:species', source: { id: 'species-skill', type: 'Trait' }, selected: ['skills:per'] }], spellChoices: [] } });
-    const errors = validateCharacterCreationReadiness(document, { ...completeSources(), class: rogueClass, background: { ...acolyteSummary, skills: ['skills:ins'] } });
+    const document = completeDocument({ classProgressions: [{ class: { ...creationClass, identifier: 'rogue', sourcePath: 'packs/_source/classes24/rogue.yml' }, targetLevel: 1, selections: [skillSelection, expertiseSelection] }], speciesConfiguration: speciesSelection });
+    const sources = { ...completeSources(), species: speciesSummary, class: rogueClass, background: { ...acolyteSummary, skills: ['skills:ins'] } };
+    const errors = validateCharacterCreationReadiness(document, sources);
     expect(errors).toContain('Choose exactly 2 expertise skills.');
     expect(errors).toContain('Expertise requires proficiency in Stealth.');
     const valid = structuredClone(document);
     valid.classProgressions![0]!.selections = [skillSelection, { ...expertiseSelection, selected: ['skills:arc', 'skills:ins'] }];
-    expect(validateCharacterCreationReadiness(valid, { ...completeSources(), class: rogueClass, background: { ...acolyteSummary, skills: ['skills:ins'] } })).not.toEqual(expect.arrayContaining([expect.stringContaining('Expertise requires proficiency')]));
+    expect(validateCharacterCreationReadiness(valid, sources)).not.toEqual(expect.arrayContaining([expect.stringContaining('Expertise requires proficiency')]));
     const speciesValid = structuredClone(document);
     speciesValid.classProgressions![0]!.selections = [skillSelection, { ...expertiseSelection, selected: ['skills:arc', 'skills:per'] }];
-    expect(validateCharacterCreationReadiness(speciesValid, { ...completeSources(), class: rogueClass })).not.toEqual(expect.arrayContaining([expect.stringContaining('Expertise requires proficiency')]));
+    expect(validateCharacterCreationReadiness(speciesValid, { ...sources, background: acolyteSummary })).not.toEqual(expect.arrayContaining([expect.stringContaining('Expertise requires proficiency')]));
     const missing = structuredClone(document);
     missing.classProgressions![0]!.selections = [skillSelection];
     expect(validateCharacterCreationReadiness(missing, { ...completeSources(), class: rogueClass })).toContain('Choose exactly 2 expertise skills.');
@@ -627,6 +711,13 @@ describe('character view render state', () => {
     const document = completeDocument({ backgroundChoices: { abilityScores: { advancementId: 'asi', assignments: { int: 2, wis: 1 } }, languages: ['languages:standard:missing'] } });
     const source = { ...acolyteSummary, languageChoices: [{ count: 1, pool: ['languages:standard:*'] }] };
     expect(validateCharacterCreationReadiness(document, completeSources(source))).toContain('Saved background language selection is not allowed by the current source.');
+  });
+  it('rejects a background language already selected in the species section at finalization', () => {
+    const document = completeDocument({ backgroundChoices: { abilityScores: { advancementId: 'asi', assignments: { int: 2, wis: 1 } }, languages: ['languages:standard:elvish'] } });
+    document.speciesConfiguration = { origin: creationOrigin, foundry: { systemVersion: '6', sourceBranch: '6', sourceCommit: 'a'.repeat(40) }, grants: [], choices: [{ key: 'language', source: { id: 'language', type: 'Trait' }, selected: ['languages:elvish'] }], spellChoices: [] };
+    const sources = completeSources({ ...acolyteSummary, languageChoices: [{ count: 1, pool: ['languages:standard:*'] }] });
+    sources.species = { ...sources.species!, advancements: [{ id: 'language', type: 'Trait', level: 1, hint: '', automatic: true, dependencies: [], raw: { configuration: { grants: [] } } }] };
+    expect(validateCharacterCreationReadiness(document, sources)).toContain('Language choices must be unique across species, class, and background.');
   });
 
   it('reports granted-feat stale, incomplete, wrong-list, and ability errors without mutation', () => {
@@ -676,6 +767,217 @@ describe('character view render state', () => {
     Object.assign(view, { document, sourceIndex: { getSpeciesSummary: async () => completeSources().species!, getClassSummary: async () => completeSources().class!, getBackgroundSummary: async () => ({ ...acolyteSummary, abilityScores: { advancementId: 'asi', points: 3, cap: 2, locked: [] } }) } });
     await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root.root as unknown as HTMLElement);
     expect(root.text).toContain('Background: Dexterity +1, Constitution +2');
+  });
+
+  it('explains why a saved partial Standard Array blocks initial character creation', () => {
+    const document = completeDocument({ abilityScores: undefined, abilityScoreDraft: { method: 'standard-array', base: { str: 15, dex: 14 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } } });
+    expect(getCharacterCreationSections(document).find((section) => section.id === 'ability-scores')?.status).not.toBe('complete');
+    expect(validateCharacterCreationReadiness(document, completeSources())).toContain('Complete all six Standard Array assignments before creating the character.');
+  });
+
+  it('preserves legacy saved rolled scores in the document but gates creation when a score exceeds 18', () => {
+    const legacy = completeDocument({ abilityScores: { ...createDefaultAbilityScores(), method: 'dice-rolling', base: { str: 30, dex: 14, con: 13, int: 12, wis: 10, cha: 8 } } });
+    expect(parseCharacterDocument(legacy).abilityScores?.base.str).toBe(30);
+    expect(getCharacterCreationSections(legacy).find((section) => section.id === 'ability-scores')?.status).not.toBe('complete');
+    expect(validateCharacterCreationReadiness(legacy, completeSources())).toContain('Rolled Strength base score must be between 3 and 18.');
+  });
+
+  it('opens legacy generated 30s as empty rolled fields and saves only entered replacements', async () => {
+    const legacy = completeDocument({ abilityScores: { ...createDefaultAbilityScores(), method: 'dice-rolling', base: { str: 30, dex: 14, con: 30, int: 30, wis: 30, cha: 30 }, rolls: { str: [10, 10, 10, 10], con: [10, 10, 10, 10] } } });
+    const { root, view, current } = abilityScoreTestView(legacy);
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    expect(abilityRows(root)[0]!.children[1]!.value).toBe('');
+    expect(abilityRows(root)[0]!.children[4]!.textContent).toBe('—');
+    expect(abilityRows(root)[1]!.children[1]!.value).toBe('14');
+    expect(current().abilityScores?.base.str).toBe(30);
+    const strength = abilityRows(root)[0]!.children[1]!;
+    strength.value = '16'; strength.dispatch('change');
+    expect(current().abilityScoreDraft?.base).toEqual({ str: 16, dex: 14 });
+    expect(current().abilityScores).toBeUndefined();
+  });
+
+  it('requires all six rolled scores before creating the character', () => {
+    const incomplete = completeDocument({ abilityScores: undefined, abilityScoreDraft: { method: 'dice-rolling', base: { str: 16 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } } });
+    expect(getCharacterCreationSections(incomplete).find((section) => section.id === 'ability-scores')?.status).not.toBe('complete');
+    expect(validateCharacterCreationReadiness(incomplete, completeSources())).toContain('Enter all six rolled scores between 3 and 18 before creating the character.');
+  });
+
+  it('saves incomplete Point Buy scores and restores them after reopening the section', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'point-buy'; method.dispatch('change');
+    const strength = abilityRows(root)[0]!.children[1]!;
+    strength.value = '15'; strength.dispatch('change');
+    expect(current().abilityScoreDraft).toMatchObject({ method: 'point-buy', base: { str: 15, dex: 8 } });
+    expect(root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[2]!.textContent).toBe('18 points remaining of 27.');
+    expect(abilityRows(root)[0]!.children[4]!.textContent).toBe('15');
+
+    const reopened = abilityScoreTestView(current());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(reopened.view, reopened.root as unknown as HTMLElement);
+    expect(abilityRows(reopened.root)[0]!.children[1]!.children.find((option) => option.value === '15')?.selected).toBe(true);
+    expect(reopened.root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[2]!.textContent).toBe('18 points remaining of 27.');
+  });
+
+  it('requires an exact Point Buy budget before character creation', () => {
+    const pointBuy = createDefaultAbilityScores();
+    const incomplete = completeDocument({ abilityScores: undefined, abilityScoreDraft: { method: 'point-buy', base: { str: 15, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, manual: pointBuy.manual } });
+    expect(getCharacterCreationSections(incomplete).find((section) => section.id === 'ability-scores')?.status).not.toBe('complete');
+    expect(validateCharacterCreationReadiness(incomplete, completeSources())).toContain('Spend exactly 27 points on Point Buy before creating the character.');
+  });
+
+  it('discards an unfinished Point Buy allocation when switching methods', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'point-buy'; method.dispatch('change');
+    const strength = abilityRows(root)[0]!.children[1]!;
+    strength.value = '15'; strength.dispatch('change');
+    expect(current().abilityScoreDraft?.method).toBe('point-buy');
+
+    method.value = 'standard-array'; method.dispatch('change');
+    const reopened = abilityScoreTestView(current());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(reopened.view, reopened.root as unknown as HTMLElement);
+    const reopenedMethod = reopened.root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    reopenedMethod.value = 'point-buy'; reopenedMethod.dispatch('change');
+    expect(reopened.view.document).toMatchObject({ abilityScoreDraft: { method: 'point-buy', base: { str: 8, dex: 8 } } });
+  });
+
+  it('resets Standard Array and rolled scores and manual adjustments when switching back', async () => {
+    const initialDraft = { method: 'standard-array' as const, base: { str: 15 }, manual: { str: 2, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } };
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined, abilityScoreDraft: initialDraft }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'dice-rolling'; method.dispatch('change');
+    expect(abilityRows(root)[0]!.children[1]!.value).toBe('');
+    expect(abilityRows(root)[0]!.children[3]!.value).toBe('0');
+    const rolled = abilityRows(root)[0]!.children[1]!;
+    rolled.value = '16'; rolled.dispatch('change');
+    const manual = abilityRows(root)[0]!.children[3]!;
+    manual.value = '3'; manual.dispatch('change');
+
+    method.value = 'standard-array'; method.dispatch('change');
+    expect(abilityRows(root)[0]!.children[1]!.children[0]!.selected).toBe(true);
+    expect(abilityRows(root)[0]!.children[3]!.value).toBe('0');
+    method.value = 'dice-rolling'; method.dispatch('change');
+    expect(abilityRows(root)[0]!.children[1]!.value).toBe('');
+    expect(abilityRows(root)[0]!.children[3]!.value).toBe('0');
+    expect(current().abilityScoreDraft).toMatchObject({ method: 'dice-rolling', base: {} });
+  });
+
+  it('captures each Point Buy draft snapshot before queuing its update', async () => {
+    const { root, view } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    const updates: Array<(document: CharacterDocument) => CharacterDocument> = [];
+    view.queueUpdate = (update: (document: CharacterDocument) => CharacterDocument) => updates.push(update);
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'point-buy'; method.dispatch('change');
+    const strength = abilityRows(root)[0]!.children[1]!;
+    strength.value = '9'; strength.dispatch('change');
+    strength.value = '10'; strength.dispatch('change');
+    const savedFirstEdit = updates[1]!(completeDocument({ abilityScores: undefined }));
+    expect(savedFirstEdit.abilityScoreDraft).toMatchObject({ method: 'point-buy', base: { str: 9 } });
+  });
+
+  it('disables Point Buy options that would overspend and resets the draft after changing methods', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'point-buy'; method.dispatch('change');
+    const rows = abilityRows(root);
+    rows[0]!.children[1]!.value = '15'; rows[0]!.children[1]!.dispatch('change');
+    rows[1]!.children[1]!.value = '15'; rows[1]!.children[1]!.dispatch('change');
+    rows[2]!.children[1]!.value = '15'; rows[2]!.children[1]!.dispatch('change');
+    expect(abilityRows(root)[3]!.children[1]!.children.find((option) => option.value === '9')?.disabled).toBe(true);
+    expect(abilityRows(root)[3]!.children[1]!.children.find((option) => option.value === '8')?.disabled).toBe(false);
+    expect(root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[2]!.textContent).toBe('0 points remaining of 27.');
+    const rejectedScore = abilityRows(root)[3]!.children[1]!;
+    rejectedScore.value = '9'; rejectedScore.dispatch('change');
+    expect(current().abilityScores?.base.int).toBe(8);
+
+    method.value = 'standard-array'; method.dispatch('change');
+    const reopened = abilityScoreTestView(current());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(reopened.view, reopened.root as unknown as HTMLElement);
+    const pointBuyMethod = reopened.root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    pointBuyMethod.value = 'point-buy'; pointBuyMethod.dispatch('change');
+    expect(abilityRows(reopened.root)[0]!.children[1]!.children.find((option) => option.value === '8')?.selected).toBe(true);
+    expect(reopened.root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[2]!.textContent).toBe('27 points remaining of 27.');
+  });
+
+  it('starts Standard Array fields empty, moves assigned scores, and saves each choice', async () => {
+    const initial = completeDocument({ abilityScores: undefined });
+    const { root, view, current } = abilityScoreTestView(initial);
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const rows = abilityRows(root);
+    expect(rows).toHaveLength(6);
+    for (const row of rows) expect(row.children[1]?.children[0]).toMatchObject({ value: '', selected: true });
+    const strength = rows[0]!.children[1]!;
+    strength.value = '15'; strength.dispatch('change');
+    expect(current().abilityScoreDraft?.base).toEqual({ str: 15 });
+    expect(current().abilityScores).toBeUndefined();
+    expect(abilityRows(root)[0]!.children[4]!.textContent).not.toBe('—');
+    expect(abilityRows(root)[1]!.children[4]!.textContent).toBe('—');
+    const dexterity = abilityRows(root)[1]!.children[1]!;
+    dexterity.value = '15'; dexterity.dispatch('change');
+    expect(current().abilityScoreDraft?.base).toEqual({ dex: 15 });
+    expect(abilityRows(root)[0]!.children[1]!.children[0]).toMatchObject({ value: '', selected: true });
+    const reopened = abilityScoreTestView(current());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(reopened.view, reopened.root as unknown as HTMLElement);
+    const methodOptions = reopened.root.children.find((child) => child.cls === 'guided-character-sheet__field')?.children[1]?.children ?? [];
+    expect(methodOptions.find((option) => option.value === 'standard-array')?.selected).toBe(true);
+    expect(abilityRows(reopened.root)[1]!.children[1]!.children.find((option) => option.value === '15')?.selected).toBe(true);
+  });
+
+  it('refreshes final scores and modifiers immediately after manual changes', async () => {
+    const { root, view } = abilityScoreTestView(completeDocument());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const before = abilityRows(root)[0]!;
+    const initialFinal = before.children[4]!.textContent;
+    const manual = before.children[3]!;
+    manual.value = '2'; manual.dispatch('change');
+    const after = abilityRows(root)[0]!;
+    expect(Number(after.children[4]!.textContent)).toBe(Number(initialFinal) + 2);
+    expect(after.children[5]!.textContent).not.toBe(before.children[5]!.textContent);
+  });
+
+  it('saves a manual adjustment made before any Standard Array base assignment', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const manual = abilityRows(root)[0]!.children[3]!;
+    manual.value = '2'; manual.dispatch('change');
+    expect(current().abilityScoreDraft?.manual.str).toBe(2);
+    expect(current().abilityScoreDraft?.base).toEqual({});
+  });
+
+  it('shows one empty rolled Base input per ability without shifting bonus and result columns', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'dice-rolling'; method.dispatch('change');
+    for (const [index, row] of abilityRows(root).entries()) {
+      expect(row.children).toHaveLength(6);
+      expect(row.children[1]).toMatchObject({ tag: 'input', value: '' });
+      expect(row.children[2]!.textContent).toBe(index === 3 ? '+2' : index === 4 ? '+1' : '—');
+      expect(row.children[4]!.textContent).toBe('—');
+      expect(row.children[5]!.textContent).toBe('—');
+    }
+    expect(current().abilityScoreDraft).toMatchObject({ method: 'dice-rolling', base: {} });
+    expect(current().abilityScores).toBeUndefined();
+  });
+
+  it('saves each entered rolled score and refreshes the correct final and modifier columns', async () => {
+    const { root, view, current } = abilityScoreTestView(completeDocument({ abilityScores: undefined }));
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(view, root as unknown as HTMLElement);
+    const method = root.children.find((child) => child.cls === 'guided-character-sheet__field')!.children[1]!;
+    method.value = 'dice-rolling'; method.dispatch('change');
+    const strengthBase = abilityRows(root)[0]!.children[1]!;
+    strengthBase.value = '16'; strengthBase.dispatch('change');
+    expect(current().abilityScoreDraft).toMatchObject({ method: 'dice-rolling', base: { str: 16 } });
+    expect(abilityRows(root)[0]!.children[4]!.textContent).toBe('16');
+    expect(abilityRows(root)[0]!.children[5]!.textContent).toBe('+3');
+    const reopened = abilityScoreTestView(current());
+    await (CharacterView.prototype as unknown as { renderAbilityScoresStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderAbilityScoresStep.call(reopened.view, reopened.root as unknown as HTMLElement);
+    expect(abilityRows(reopened.root)[0]!.children[1]!.value).toBe('16');
   });
   it('offers class selection after an origin and projects level-one class summary', () => {
     const document = { ...withRuleset(createCharacterDocument('Ayla', snapshot), '2024'), origin: { sourcePath: 'packs/_source/origins24/species/elf.yml', identifier: 'elf', id: 'elf-id' } };
@@ -889,6 +1191,21 @@ describe('character view render state', () => {
     expect(reconstructed.inventory?.currency.gp).toBe(90);
   }, 12_000);
 
+  it('does not ask for the Wizard package’s sole nested Staff choice', () => {
+    const selects: DropdownTestSelect[] = [];
+    const root = createDropdownTestRoot(selects);
+    const view = Object.create(CharacterView.prototype) as Record<string, unknown>;
+    const summary = { roots: [{ nodeId: 'package', type: 'OR', diagnostics: [], children: [
+      { nodeId: 'equipment', type: 'AND', diagnostics: [], children: [{ nodeId: 'focus', type: 'OR', diagnostics: [], children: [{ nodeId: 'staff', type: 'linked', diagnostics: [], item: { sourcePath: 'staff.yml', pack: 'test', type: 'equipment', id: 'staff', name: 'Staff' }, quantity: 1 }] }] },
+      { nodeId: 'wealth', type: 'currency', diagnostics: [], currency: { denomination: 'gp', amount: 55 } },
+    ] }], diagnostics: [] };
+
+    (CharacterView.prototype as unknown as { renderEquipmentPackages(this: Record<string, unknown>, root: HTMLElement, summary: unknown, saved: unknown, itemChoices: unknown, onChange: () => void): void }).renderEquipmentPackages.call(view, root as unknown as HTMLElement, summary, { selected: { package: 'equipment' }, semantic: {} }, new Map(), () => undefined);
+
+    expect(selects).toHaveLength(1);
+    expect(selects[0]?.options.map((option) => option.textContent)).toContain('Staff');
+  });
+
   it('renders the selected class option description below the dropdown', () => {
     const order: string[] = [];
     const details = { textContent: '' };
@@ -1047,6 +1364,24 @@ describe('character view render state', () => {
   it('does not project choice-pool entries as standalone features', () => {
     const state = { kind: 'species-summary' as const, name: 'Dragonborn', sourcePath: 'packs/_source/races/dragonborn/dragonborn.yml', automatic: [], pending: [], dependencies: [], unresolvedDependencies: [], unresolvedWarnings: [], features: [{ source: { sourcePath: 'packs/_source/races/dragonborn/black.yml', pack: 'dnd5e.races', type: 'feat', id: 'black', name: 'Black Breath Weapon' }, level: 1, automatic: false }] };
     expect(getSpeciesFeatureCallouts(state)).toEqual([]);
+  });
+
+  it('shows the selected eligible species feat description but not other choice-pool feats', () => {
+    const document = { ...withRuleset(createCharacterDocument('Ayla', snapshot), '2024'), origin: { sourcePath: 'packs/_source/origins24/species/elf.yml', identifier: 'elf', id: 'elf-id' }, speciesConfiguration: {
+      origin: { sourcePath: 'packs/_source/origins24/species/elf.yml', identifier: 'elf', id: 'elf-id' },
+      foundry: { systemVersion: snapshot.systemVersion, sourceBranch: snapshot.branch, sourceCommit: snapshot.commit }, grants: [], spellChoices: [],
+      choices: [{ key: 'species:heritage', source: { id: 'heritage', type: 'ItemChoice' }, selected: ['selected-feat'] }],
+    } };
+    const selected = { sourcePath: 'packs/_source/feats/selected.yml', pack: 'dnd5e.feats', type: 'feat' as const, id: 'selected-feat', name: 'Selected feat' };
+    const candidate = { sourcePath: 'packs/_source/feats/candidate.yml', pack: 'dnd5e.feats', type: 'feat' as const, id: 'candidate-feat', name: 'Candidate feat' };
+    const summary = { source: { sourcePath: document.origin.sourcePath, pack: 'dnd5e.origins24', type: 'race' as const, id: 'elf-id', name: 'Elf' }, ruleset: '2024' as const, advancements: [], features: [
+      { source: selected, level: 1, automatic: false, selection: { key: 'species:heritage', value: 'selected-feat' }, description: 'Selected feat rules text.' },
+      { source: candidate, level: 1, automatic: false, selection: { key: 'species:heritage', value: 'candidate-feat' }, description: 'Candidate rules text.' },
+    ] };
+
+    const state = getSpeciesRenderState(document, summary)!;
+
+    expect(getSpeciesFeatureCallouts(state)).toEqual([{ name: 'Selected feat', description: 'Selected feat rules text.', sourcePath: selected.sourcePath }]);
   });
 
   it('filters empty core trait values before presentation', () => {
@@ -1589,7 +1924,7 @@ describe('character view render state', () => {
     await renderBackgroundStep.call({
       document,
       sourceReader: { listBackgrounds: async () => [] },
-      sourceIndex: { getBackgroundSummary: async () => summary },
+      sourceIndex: { getBackgroundSummary: async () => summary, getClassSummary: async () => completeSources().class!, getSpeciesSummary: async () => completeSources().species! },
       renderStateMessage: () => undefined,
       renderClassCallout: (_root: HTMLElement, _label: string, _open: boolean, render: (content: HTMLElement) => void) => { render(root as unknown as HTMLElement); return root; },
       renderBackgroundOverview: () => undefined,
@@ -1614,6 +1949,81 @@ describe('character view render state', () => {
     selects[0].value = 'skills:ani';
     selects[0].handlers[0]();
     expect(selects[1].options.find((option) => option.value === 'skills:ani')?.disabled).toBe(true);
+  });
+  it('shows pinned Appendix D descriptions for every mastery-bearing eligible weapon', async () => {
+    const sourceIndex = createPinnedSourceIndex();
+    const [weapons, descriptions, shortsword] = await Promise.all([
+      sourceIndex.resolveSelector('weapon:*', '2024'),
+      sourceIndex.getWeaponMasteryDescriptions(),
+      sourceIndex.getItemSummary('2024', 'packs/_source/equipment24/weapons/martial-melee/shortsword.yml'),
+    ]);
+    expect(shortsword?.description).toBe('');
+    const masteryWeapons = weapons.filter((weapon) => weapon.mastery?.trim());
+    expect(masteryWeapons.length).toBeGreaterThan(0);
+    for (const weapon of masteryWeapons) {
+      const option = classChoiceDisplayOptionFromSource(weapon, 'weapon:*', descriptions);
+      expect(option.description).toBe(descriptions.get(weapon.mastery!.toLocaleLowerCase()));
+      expect(option.description).toBeTruthy();
+    }
+    expect(classChoiceDisplayOptionFromSource(shortsword!, 'weapon:*', descriptions).description).toContain('Advantage on your next attack roll');
+    let renderedDescription = '';
+    const detail = { set textContent(value: string) { renderedDescription = value; } };
+    const shortOption = classChoiceDisplayOptionFromSource(shortsword!, 'weapon:*', descriptions);
+    renderClassChoiceDetails({ createDiv: () => detail } as unknown as HTMLElement, [shortOption], [`weapon:${shortsword!.id}`]);
+    expect(renderedDescription).toContain('Advantage on your next attack roll');
+  });
+
+  it('offers mastery only for distinct source weapons with mastery and eligible training', () => {
+    const selects: DropdownTestSelect[] = [];
+    const root = createDropdownTestRoot(selects);
+    const configuration = buildClassConfiguration({
+      source: { sourcePath: 'packs/_source/classes24/rogue/rogue.yml', pack: 'dnd5e.classes24', type: 'class', id: 'rogue', name: 'Rogue' },
+      ruleset: '2024', hitDie: 'd8', advancements: [{ id: 'mastery', type: 'Trait', level: 1, title: 'Weapon Mastery', hint: '', dependencies: [], raw: { configuration: { mode: 'mastery', choices: [{ count: 2, pool: ['weapon:*'] }] } } }],
+    }, snapshot, 1);
+    const item = (id: string, category: string, mastery: string, sourcePath = `${id}.yml`): FoundryItemSummary => ({ sourcePath, pack: 'dnd5e.equipment24', type: 'weapon', id, identifier: id, name: id, ruleset: '2024', itemType: 'weapon', category, subcategory: id, mastery, magic: false, equippable: true, properties: [] });
+    const resolved = [item('dagger', 'simpleM', 'nick'), item('dagger', 'simpleM', 'nick', 'duplicate-dagger.yml'), item('shortsword', 'martialM', 'vex'), item('warhammer', 'martialM', 'push'), item('unarmed-strike', 'simpleM', ''), item('weapon-plus-one', 'martialM', '')].map((source) => ({ id: `weapon:${source.id}`, name: source.name, sourcePath: source.sourcePath, source, sourceSelector: 'weapon:*' }));
+
+    renderClassConfigurationControls(root as unknown as HTMLElement, configuration, () => undefined, undefined, undefined, new Map([['mastery', resolved]]), [], ['weapon:sim', 'weapon:mar:shortsword']);
+
+    expect(selects).toHaveLength(2);
+    for (const select of selects) expect(select.options.filter((option) => option.value !== '').map((option) => option.value)).toEqual(['weapon:dagger', 'weapon:shortsword']);
+  });
+
+  it('offers only source-pooled proficiencies in expertise dropdowns', () => {
+    const selects: DropdownTestSelect[] = [];
+    const root = createDropdownTestRoot(selects);
+    const configuration = buildClassConfiguration({
+      source: { sourcePath: 'packs/_source/classes24/rogue/rogue.yml', pack: 'dnd5e.classes24', type: 'class', id: 'rogue-id', identifier: 'rogue', name: 'Rogue' },
+      ruleset: '2024', hitDie: 'd8', advancements: [{ id: 'expertise', type: 'Trait', level: 1, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: [{ count: 2, pool: ['skills:*'] }] } } }],
+    }, snapshot, 1);
+
+    renderClassConfigurationControls(root as unknown as HTMLElement, configuration, () => undefined, undefined, undefined, undefined, ['skills:dec', 'skills:prc', 'tool:thief']);
+
+    expect(selects).toHaveLength(2);
+    for (const select of selects) {
+      expect(select.options.filter((option) => option.value !== '').map((option) => option.value)).toEqual(['skills:dec', 'skills:prc']);
+      expect(select.options.some((option) => option.value === 'skills:acr')).toBe(false);
+      expect(select.options.some((option) => option.value === 'tool:thief')).toBe(false);
+    }
+  });
+
+  it('keeps a stale expertise selection visible but disabled for correction', () => {
+    const selects: DropdownTestSelect[] = [];
+    const rendered: string[] = [];
+    const root = createDropdownTestRoot(selects, rendered);
+    const built = buildClassConfiguration({
+      source: { sourcePath: 'packs/_source/classes24/rogue/rogue.yml', pack: 'dnd5e.classes24', type: 'class', id: 'rogue-id', identifier: 'rogue', name: 'Rogue' },
+      ruleset: '2024', hitDie: 'd8', advancements: [{ id: 'expertise', type: 'Trait', level: 1, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: [{ count: 1, pool: ['skills:*'] }] } } }],
+    }, snapshot, 1);
+    const choice = built.choices[0];
+    if (choice?.kind !== 'expertise') throw new Error('Expected expertise choice');
+    const configuration = setClassSelection(built, { ...choice, selected: ['skills:acr'] });
+
+    renderClassConfigurationControls(root as unknown as HTMLElement, configuration, () => undefined, undefined, undefined, undefined, ['skills:dec']);
+
+    const stale = selects[0]?.options.find((option) => option.value === 'skills:acr');
+    expect(stale).toMatchObject({ textContent: 'Acrobatics (not proficient)', disabled: true, selected: true });
+    expect(rendered).toContain('Expertise requires proficiency in Acrobatics.');
   });
 
   it('expands the pinned 2024 Bard skill wildcard into all skill proficiency options', () => {
@@ -1812,6 +2222,73 @@ describe('character view render state', () => {
     vi.unstubAllGlobals();
   });
 
+  it('applies inventory item changes to mutable state and synchronizes equipment status', () => {
+    let document: CharacterDocument = createInventorySheetDocument(true);
+    const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => { document = update(document); } };
+    const apply = (CharacterView.prototype as unknown as { applyManagedItems(this: typeof context, changes: InventoryItemChanges): void }).applyManagedItems;
+    apply.call(context, { removedEntryIds: ['chain'], added: [{ source: { sourcePath: 'torch.yml', pack: 'dnd5e.equipment24', type: 'equipment', id: 'torch', name: 'Torch', ruleset: '2024', itemType: 'equipment', magic: false, equippable: false, properties: [] }, quantity: 2 }], quantityChanges: [{ entryId: 'travel-journal', delta: 1 }] });
+    expect(document.mutable?.inventory.items.map((entry) => entry.entryId)).toEqual(['travel-journal', 'shield', 'source:dnd5e.equipment24:torch']);
+    expect(document.mutable?.inventory.currency.gp).toBe(12);
+    expect(document.mutable?.inventory.items.find((entry) => entry.entryId === 'travel-journal')?.quantity).toBe(3);
+    expect(document.mutable?.inventory.items.find((entry) => entry.entryId === 'source:dnd5e.equipment24:torch')?.quantity).toBe(2);
+    expect(document.mutable?.equipmentStatus).toEqual([
+      { entryId: 'travel-journal', equipped: false, attuned: false },
+      { entryId: 'shield', equipped: false, attuned: false },
+      { entryId: 'source:dnd5e.equipment24:torch', equipped: false, attuned: false },
+    ]);
+  });
+
+  it('saves one inventory Apply after an unfinished character write completes', async () => {
+    const file = new TFile();
+    file.path = 'Characters/ayla.json';
+    let persisted: CharacterDocument = createInventorySheetDocument();
+    let writes = 0;
+    let finishFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => { finishFirstWrite = resolve; });
+    const view = Object.create(CharacterView.prototype) as Record<string, unknown>;
+    Object.assign(view, {
+      file,
+      document: persisted,
+      conflict: false,
+      queuedUpdateCount: 0,
+      writingUpdate: false,
+      opened: true,
+      store: { update: async (_file: TFile, update: (current: CharacterDocument) => CharacterDocument) => {
+        writes += 1;
+        if (writes === 1) await firstWrite;
+        persisted = update(persisted);
+        return persisted;
+      } },
+      render: async () => undefined,
+      renderUnavailable: vi.fn(),
+    });
+    const methods = CharacterView.prototype as unknown as {
+      queueUpdate(this: typeof view, update: (current: CharacterDocument) => CharacterDocument): void;
+      applyManagedItems(this: typeof view, changes: InventoryItemChanges): void;
+      flushPendingUpdate(this: typeof view): Promise<void>;
+    };
+    methods.queueUpdate.call(view, (document: CharacterDocument) => ({ ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, currency: { ...document.mutable!.inventory.currency, gp: 13 } } } }));
+    await Promise.resolve();
+    expect(writes).toBe(1);
+
+    methods.applyManagedItems.call(view, { removedEntryIds: ['chain'], added: [{ source: { sourcePath: 'torch.yml', pack: 'dnd5e.equipment24', type: 'equipment', id: 'torch', name: 'Torch', ruleset: '2024', itemType: 'equipment', magic: false, equippable: false, properties: [] }, quantity: 2 }], quantityChanges: [{ entryId: 'travel-journal', delta: 1 }] });
+    expect(writes).toBe(1);
+    finishFirstWrite?.();
+    await methods.flushPendingUpdate.call(view);
+
+    expect(writes).toBe(2);
+    expect(persisted.mutable?.inventory.currency.gp).toBe(13);
+    expect(persisted.mutable?.inventory.items.map((entry) => [entry.entryId, entry.quantity])).toEqual([['travel-journal', 3], ['source:dnd5e.equipment24:torch', 2]]);
+  });
+
+  it('adds a legacy Foundry item to a 2024 character inventory', () => {
+    let document: CharacterDocument = createInventorySheetDocument();
+    const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => { document = update(document); } };
+    const apply = (CharacterView.prototype as unknown as { applyManagedItems(this: typeof context, changes: InventoryItemChanges): void }).applyManagedItems;
+    apply.call(context, { removedEntryIds: [], added: [{ source: { sourcePath: 'packs/_source/items/weapon/shortsword-1.yml', pack: 'dnd5e.items', type: 'weapon', id: 'shortsword-1', name: 'Shortsword +1', ruleset: '2014', itemType: 'weapon', magic: true, equippable: true, properties: [] }, quantity: 1 }], quantityChanges: [] });
+    expect(document.mutable?.inventory.items.at(-1)).toMatchObject({ source: { name: 'Shortsword +1', pack: 'dnd5e.items' }, quantity: 1 });
+  });
+
   it('updates spell slots, free castings, and feature uses independently', () => {
     let document: CharacterDocument = createSheetDocument();
     document.mutable = {
@@ -1926,6 +2403,64 @@ describe('character view render state', () => {
     expect(document.mutable?.hitPoints).toEqual({ current: 10, maximum: 10, temporary: 4 });
   });
 
+  it('saves currency changes against the latest carried balance without changing starting currency', () => {
+    let document: CharacterDocument = createSheetDocument();
+    document.inventory = { items: [], currency: { pp: 1, gp: 2, ep: 0, sp: 0, cp: 0 } };
+    document.mutable = {
+      preparedSpells: [], inventory: { items: [], currency: { pp: 1, gp: 2, ep: 0, sp: 0, cp: 0 } },
+      equipmentStatus: [], resources: [],
+    };
+    const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => {
+      document = { ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, currency: { ...document.mutable!.inventory.currency, cp: 4 } } } };
+      document = update(document);
+    } };
+    const apply = (CharacterView.prototype as unknown as { applyCurrencyChange(this: typeof context, operation: 'add' | 'spend', denomination: 'pp' | 'gp' | 'ep' | 'sp' | 'cp', amount: number): void }).applyCurrencyChange;
+
+    apply.call(context, 'spend', 'sp', 5);
+    expect(document.mutable.inventory.currency).toEqual({ pp: 1, gp: 1, ep: 0, sp: 5, cp: 4 });
+    expect(document.inventory.currency).toEqual({ pp: 1, gp: 2, ep: 0, sp: 0, cp: 0 });
+  });
+
+  it('persists one atomic chosen rest transition from the latest document state', () => {
+    let document: CharacterDocument = createSheetDocument();
+    document.mutable = {
+      preparedSpells: [],
+      inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 7, pp: 0 } },
+      equipmentStatus: [],
+      resources: [{ key: 'feature:second-wind', current: 0, maximum: 2, reset: 'long-rest', recovery: [{ period: 'long-rest', type: 'recover-all' }] }],
+      hitPoints: { current: 3, maximum: 10, temporary: 2 },
+      spellSlots: [{ level: 1, current: 0, maximum: 2 }],
+    };
+    const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => { document = update(document); } };
+    const complete = (CharacterView.prototype as unknown as { completeRest(this: typeof context, choice: { type: 'long' }): void }).completeRest;
+
+    complete.call(context, { type: 'long' });
+
+    expect(document.mutable).toMatchObject({
+      hitPoints: { current: 10, maximum: 10, temporary: 0 },
+      spellSlots: [{ level: 1, current: 2, maximum: 2 }],
+      resources: [{ key: 'feature:second-wind', current: 2, maximum: 2 }],
+      inventory: { currency: { gp: 7 } },
+    });
+  });
+
+  it('applies a confirmed Short Rest choice to the latest mutable state', () => {
+    let document: CharacterDocument = createSheetDocument();
+    document.mutable = {
+      preparedSpells: [], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [],
+      hitPoints: { current: 5, maximum: 10, temporary: 2 },
+      hitDice: [{ classSourcePath: 'packs/_source/classes24/fighter/fighter.yml', denomination: 'd10', current: 1, maximum: 1 }],
+      resources: [{ key: 'feature:second-wind', current: 0, maximum: 1, reset: 'short-rest' }],
+    };
+    const context = { queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => {
+      document = { ...document, mutable: { ...document.mutable!, hitPoints: { ...document.mutable!.hitPoints!, current: 6 } } };
+      document = update(document);
+    } };
+    const complete = (CharacterView.prototype as unknown as { completeRest(this: typeof context, choice: { type: 'short'; input: { hitDieClassSourcePath: string; healing: number } }): void }).completeRest;
+    complete.call(context, { type: 'short', input: { hitDieClassSourcePath: 'packs/_source/classes24/fighter/fighter.yml', healing: 3 } });
+    expect(document.mutable).toMatchObject({ hitPoints: { current: 9, maximum: 10, temporary: 2 }, hitDice: [{ current: 0 }], resources: [{ current: 1 }] });
+  });
+
   it('persists inspiration corrections without changing other mutable state', () => {
     let document: CharacterDocument = createSheetDocument();
     document.mutable = {
@@ -1947,6 +2482,10 @@ describe('character view render state', () => {
   it('finalizes authoritative mutable state and excludes higher-level resources', async () => {
     const document = { ...createSheetDocument(), backgroundChoices: { abilityScores: { advancementId: 'asi', assignments: { con: 2, dex: 1 } } } };
     document.origin = { ...document.origin, sourcePath: 'packs/_source/origins24/species/dwarf.yml', identifier: 'dwarf', id: 'dwarf-id' };
+    document.speciesConfiguration = {
+      origin: { ...document.origin }, foundry: { ...document.foundry }, grants: [], spellChoices: [],
+      choices: [{ key: 'species:ancestry', source: { id: 'ancestry', type: 'ItemChoice' }, selected: ['other-feature'] }],
+    };
     document.inventory = { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } };
     const ward = { sourcePath: 'packs/_source/spells/ward.yml', pack: 'dnd5e.spells24', type: 'spell', id: 'ward', name: 'Ward' };
     const unsupportedSpell = { sourcePath: 'packs/_source/spells/unsupported.yml', pack: 'dnd5e.spells24', type: 'spell', id: 'unsupported', name: 'Unsupported' };
@@ -1970,22 +2509,39 @@ describe('character view render state', () => {
     const file = new TFile(); file.path = 'Characters/ayla.json';
     const update = vi.fn(async (_file: TFile, apply: (value: CharacterDocument) => CharacterDocument) => apply(document));
     const view = Object.create(CharacterView.prototype) as Record<string, unknown>;
-    Object.assign(view, { document, file, flushPendingUpdate: async () => undefined, leaf: { setViewState: async () => undefined }, loadFromState: async () => undefined, contentEl: { empty: () => undefined, createDiv: () => undefined }, store: { update }, sourceIndex: { getSpeciesSummary: async () => ({ source: { sourcePath: document.origin.sourcePath, pack: 'dnd5e.origins24', type: 'race', id: 'dwarf-id', identifier: 'dwarf', name: 'Dwarf' }, ruleset: '2024' as const, advancements: [], hitPointModifiers: [{ perLevel: 1, source: { sourcePath: 'packs/_source/origins24/species/traits/dwarf/dwarven-toughness.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'dwarven-toughness', identifier: 'dwarven-toughness', name: 'Dwarven Toughness' } }], features: [{ advancementId: 'breath', level: 1, source: { sourcePath: 'packs/_source/features/breath-weapon.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'breath', name: 'Breath Weapon' }, uses: { maximum: '@prof', recovery: [{ period: 'lr' }] } }, { advancementId: 'future', level: 5, source: { sourcePath: 'packs/_source/features/future.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'future', name: 'Future' }, uses: { maximum: 1, recovery: [{ period: 'lr' }] } }] }), getClassSummary: async () => classSummary, getBackgroundSummary: async () => ({ ...createSheetBackgroundSummary(document), abilityScores: { advancementId: 'asi', points: 3, cap: 2, locked: [] } }) } });
+    Object.assign(view, { document, file, flushPendingUpdate: async () => undefined, leaf: { setViewState: async () => undefined }, loadFromState: async () => undefined, contentEl: { empty: () => undefined, createDiv: () => undefined }, store: { update }, sourceIndex: { getSpeciesSummary: async () => ({ source: { sourcePath: document.origin.sourcePath, pack: 'dnd5e.origins24', type: 'race', id: 'dwarf-id', identifier: 'dwarf', name: 'Dwarf' }, ruleset: '2024' as const, advancements: [{ id: 'ancestry', type: 'ItemChoice', level: 1, hint: '', automatic: false, dependencies: [{ uuid: 'other-feature', source: { sourcePath: 'packs/_source/features/other.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'other', name: 'Other' } }, { uuid: 'unselected-feature', source: { sourcePath: 'packs/_source/features/unselected.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'unselected', name: 'Unselected' } }], raw: { configuration: { choices: 1, pool: ['other-feature', 'unselected-feature'] } } }], features: [{ advancementId: 'toughness', level: 1, automatic: true, source: { sourcePath: 'packs/_source/origins24/species/traits/dwarf/dwarven-toughness.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'dwarven-toughness', identifier: 'dwarven-toughness', name: 'Dwarven Toughness' }, hitPointModifiers: [{ perLevel: 1, source: { sourcePath: 'packs/_source/origins24/species/traits/dwarf/dwarven-toughness.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'dwarven-toughness', identifier: 'dwarven-toughness', name: 'Dwarven Toughness' } }] }, { advancementId: 'breath', level: 1, automatic: true, source: { sourcePath: 'packs/_source/features/breath-weapon.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'breath', name: 'Breath Weapon' }, uses: { maximum: '@prof', recovery: [{ period: 'lr' }] } }, { advancementId: 'unselected', level: 1, selection: { key: 'species:ancestry', value: 'unselected-feature' }, source: { sourcePath: 'packs/_source/features/unselected.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'unselected', name: 'Unselected' }, uses: { maximum: 1, recovery: [{ period: 'lr' }] } }, { advancementId: 'future', level: 5, automatic: true, source: { sourcePath: 'packs/_source/features/future.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'future', name: 'Future' }, uses: { maximum: 1, recovery: [{ period: 'lr' }] } }] }), getClassSummary: async () => classSummary, getBackgroundSummary: async () => ({ ...createSheetBackgroundSummary(document), abilityScores: { advancementId: 'asi', points: 3, cap: 2, locked: [] } }) } });
     await (CharacterView.prototype as unknown as { finalizeCharacter(this: Record<string, unknown>): Promise<void> }).finalizeCharacter.call(view);
     const written = update.mock.results[0]?.value;
     const finalized = await written as CharacterDocument;
     expect(finalized.mutable).toMatchObject({ hitPoints: { current: 13, maximum: 13 }, inspiration: false, spellSlots: [{ level: 1, current: 2, maximum: 2 }], spellUses: [{ current: 1, maximum: 1, reset: 'long-rest' }] });
     expect(finalized.mutable?.resources).toEqual(expect.arrayContaining([
-      { key: 'feature:packs/_source/features/second-wind.yml', current: 2, maximum: 2, reset: 'short-rest' },
-      { key: 'feature:packs/_source/features/second-wind.yml:activity:recover', current: 1, maximum: 1, reset: 'short-rest' },
-      { key: 'feature:packs/_source/features/breath-weapon.yml', current: 2, maximum: 2, reset: 'long-rest' },
+      { key: 'feature:packs/_source/features/second-wind.yml', current: 2, maximum: 2, reset: 'short-rest', recovery: [{ period: 'short-rest', type: 'recover-all' }] },
+      { key: 'feature:packs/_source/features/second-wind.yml:activity:recover', current: 1, maximum: 1, reset: 'short-rest', recovery: [{ period: 'short-rest', type: 'recover-all' }] },
+      { key: 'feature:packs/_source/features/breath-weapon.yml', current: 2, maximum: 2, reset: 'long-rest', recovery: [{ period: 'long-rest', type: 'recover-all' }] },
     ]));
     expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('action-surge'))).toBe(false);
     expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('/future.yml'))).toBe(false);
+    expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('/unselected.yml'))).toBe(false);
     expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('unsupported'))).toBe(false);
     expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('sneak-attack'))).toBe(false);
     expect(finalized.mutable?.resources.some((resource: { key: string }) => resource.key.includes('scaled-maximum'))).toBe(false);
     expect(finalized.mutable?.spellUses).toHaveLength(1);
+  });
+
+  it('refuses to finalize a saved Weapon Mastery choice outside current training', async () => {
+    const document = completeDocument({ classProgressions: [{ class: creationClass, targetLevel: 1, selections: [{ advancementId: 'mastery', kind: 'trait', selected: ['weapon:warhammer'], configuredPool: ['weapon:*'] }] }] });
+    const sources = completeSources();
+    sources.class = { ...sources.class!, proficiencies: { armor: [], weapons: ['weapon:sim'], tools: [], savingThrows: [], languages: [], skills: [], choices: [] }, advancements: [{ id: 'mastery', type: 'Trait', level: 1, title: 'Weapon Mastery', hint: '', dependencies: [], raw: { configuration: { mode: 'mastery', choices: [{ count: 1, pool: ['weapon:*'] }] } } }] };
+    const file = new TFile(); file.path = 'Characters/mastery.json';
+    const renderUnavailable = vi.fn();
+    const update = vi.fn();
+    const view = Object.create(CharacterView.prototype) as Record<string, unknown>;
+    Object.assign(view, { document, file, flushPendingUpdate: async () => undefined, loadCharacterSheetSources: async () => sources, renderUnavailable, store: { update: async () => { update(); return document; } }, leaf: { setViewState: async () => undefined }, loadFromState: async () => undefined, sourceIndex: { resolveSelector: async () => [{ sourcePath: 'warhammer.yml', pack: 'test', type: 'weapon', id: 'warhammer', identifier: 'warhammer', name: 'Warhammer', ruleset: '2024', itemType: 'weapon', category: 'martialM', subcategory: 'warhammer', mastery: 'push', magic: false, equippable: true, properties: [] }], getSpeciesSummary: async () => sources.species, getClassSummary: async () => sources.class, getBackgroundSummary: async () => sources.background } });
+
+    await (CharacterView.prototype as unknown as { finalizeCharacter(this: Record<string, unknown>): Promise<void> }).finalizeCharacter.call(view);
+
+    expect(renderUnavailable).toHaveBeenCalledWith('Weapon Mastery selection Warhammer is not eligible for the current weapon proficiencies.');
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('does not initialize free uses from persisted class or species choices above target level', () => {
@@ -2005,7 +2561,7 @@ describe('character view render state', () => {
     const document = createSheetDocument();
     const species = { source: { sourcePath: document.origin.sourcePath, pack: 'dnd5e.origins24', type: 'race', id: 'elf-id', name: 'Elf' }, ruleset: '2024' as const, advancements: [], spellGrants: [{ advancementId: 'forest', level: 1, spells: [reference], abilityOptions: [], raw: { configuration: { spell: { uses: { max: '@prof', per: 'lr', requireSlot: false } } } } }] } as unknown as SpeciesSourceSummary;
     const classSummary = { ...createSheetClassSummary(document), advancements: [] } as unknown as ClassSourceSummary;
-    expect(collectFinalizationSpellUses(document, classSummary, species, 1, undefined, 2)).toEqual([{ key: `${reference.sourcePath}:${reference.pack}:${reference.type}:${reference.id}`, current: 2, maximum: 2, reset: 'long-rest' }]);
+    expect(collectFinalizationSpellUses(document, classSummary, species, 1, undefined, 2)).toEqual([{ key: `${reference.sourcePath}:${reference.pack}:${reference.type}:${reference.id}`, current: 2, maximum: 2, reset: 'long-rest', recovery: [{ period: 'long-rest', type: 'recover-all' }] }]);
   });
 
   it('does not write finalization state when an authoritative source fails', async () => {
@@ -2083,7 +2639,7 @@ describe('character view render state', () => {
 
     await (CharacterView.prototype as unknown as { finalizeCharacter(this: Record<string, unknown>): Promise<void> }).finalizeCharacter.call(view);
 
-    expect(finalized?.mutable?.spellUses).toEqual(expect.arrayContaining([{ key: `${guidance.sourcePath}:${guidance.pack}:${guidance.type}:${guidance.id}`, current: 1, maximum: 1, reset: 'long-rest' }]));
+    expect(finalized?.mutable?.spellUses).toEqual(expect.arrayContaining([{ key: `${guidance.sourcePath}:${guidance.pack}:${guidance.type}:${guidance.id}`, current: 1, maximum: 1, reset: 'long-rest', recovery: [{ period: 'long-rest', type: 'recover-all' }] }]));
   });
 
   it('persists an edit queued during a plugin-owned write without reporting an external conflict', async () => {
@@ -2297,6 +2853,51 @@ function createViewRenderRoot(): { root: TestNode; text: string[]; control: (lab
     return node;
   };
   return { root: createNode(), text, control: (label) => { const found = controls.find((node) => label === 'Character name' ? node.type === 'text' : node.textContent === label); if (found === undefined) throw new Error(`Missing test control: ${label}`); return found; } };
+}
+
+type AbilityTestNode = {
+  tag: string;
+  value: string;
+  textContent: string;
+  selected: boolean;
+  disabled: boolean;
+  cls: string;
+  children: AbilityTestNode[];
+  createDiv: (options?: { text?: string; cls?: string }) => AbilityTestNode;
+  createSpan: (options?: { text?: string; cls?: string }) => AbilityTestNode;
+  createEl: (tag: string, options?: { text?: string; value?: string; cls?: string; type?: string; attr?: Record<string, string> }) => AbilityTestNode;
+  empty: () => void;
+  addEventListener: (event: string, handler: (event: { target: AbilityTestNode }) => void) => void;
+  dispatch: (event: string) => void;
+};
+
+function abilityScoreTestView(initial: CharacterDocument): { root: AbilityTestNode; view: Record<string, unknown>; current: () => CharacterDocument } {
+  const createNode = (options: { text?: string; value?: string; cls?: string } = {}, tag = 'div'): AbilityTestNode => {
+    const handlers = new Map<string, (event: { target: AbilityTestNode }) => void>();
+    const node: AbilityTestNode = {
+      tag, value: options.value ?? '', textContent: options.text ?? '', selected: false, disabled: false, cls: options.cls ?? '', children: [],
+      createDiv: (child) => { const created = createNode(child); node.children.push(created); return created; },
+      createSpan: (child) => { const created = createNode(child); node.children.push(created); return created; },
+      createEl: (childTag, child) => { const created = createNode(child, childTag); node.children.push(created); return created; },
+      empty: () => { node.children = []; },
+      addEventListener: (event, handler) => { handlers.set(event, handler); },
+      dispatch: (event) => { handlers.get(event)?.({ target: node }); },
+    };
+    return node;
+  };
+  let document = initial;
+  const view: Record<string, unknown> = Object.create(CharacterView.prototype);
+  Object.assign(view, {
+    document,
+    sourceIndex: { getSpeciesSummary: async () => completeSources().species!, getClassSummary: async () => completeSources().class!, getBackgroundSummary: async () => completeSources().background! },
+    queueUpdate: (update: (current: CharacterDocument) => CharacterDocument) => { document = update(document); view.document = document; },
+  });
+  return { root: createNode(), view, current: () => document };
+}
+
+function abilityRows(root: AbilityTestNode): AbilityTestNode[] {
+  const table = root.children.find((child) => child.cls === 'guided-character-sheet__ability-table');
+  return table?.children.slice(1) ?? [];
 }
 
 function spellReference(name: string, id: string, level: number, spellLists: string[]): SpellChoice['options'][number] {

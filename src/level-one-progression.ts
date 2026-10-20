@@ -8,9 +8,11 @@ export interface LevelOneSpellProgression {
   spellbookSpells?: number;
   preparedSpells?: number;
   spellLists: string[];
-  spellSlots?: Array<{ level: number; maximum: number }>;
+  spellSlots?: LevelOneSpellSlot[];
   diagnostics?: string[];
 }
+
+export interface LevelOneSpellSlot { key: string; kind: 'spell' | 'pact'; level: number; maximum: number; recovery: Array<'short-rest' | 'long-rest'>; }
 
 export interface LevelOneClassProgression {
   classIdentifier: string;
@@ -33,7 +35,8 @@ export function evaluateScaleAtLevel<T>(scale: ReadonlyMap<number, T>, level: nu
 
 export function getLevelOneClassProgression(summary: ClassSourceSummary): LevelOneClassProgression {
   const sourceSpellcasting = summary.spellcasting;
-  const featureText = [summary.description ?? '', ...(summary.features?.map((feature) => feature.description ?? '') ?? [])].join(' ');
+  const levelOneFeatures = summary.features?.filter((feature) => feature.level <= 1 && feature.requiresChoice === undefined && (feature.classRestriction === undefined || feature.classRestriction === 'primary')) ?? [];
+  const featureText = [summary.description ?? '', ...levelOneFeatures.map((feature) => feature.description ?? '')].join(' ');
   const diagnostics: string[] = [];
   const number = (pattern: RegExp, label: string): number | undefined => {
     const match = featureText.match(pattern);
@@ -48,11 +51,12 @@ export function getLevelOneClassProgression(summary: ClassSourceSummary): LevelO
   const spellbookSpells = typeof sourceSpellcasting?.spellbookSpells === 'number' ? sourceSpellcasting.spellbookSpells : number(new RegExp(`(?:contain(?:ing|s)|starts with)\\s+${numeric}\\s+(?:1st[- ]level|level 1)`, 'i'), 'spellbook count');
   const learnedSpells = typeof sourceSpellcasting?.learnedSpells === 'number' ? sourceSpellcasting.learnedSpells : number(new RegExp(`choose\\s+${numeric}\\s+(?:(?:(?:1st[- ]level|level\\s+1\\+?)\\s+)?spells?\\s+from (?:the|your)\\s+[A-Za-z]+\\s+spell list|(?:1st[- ]level|level\\s+1\\+?)\\s+[A-Za-z]+\\s+spells?)`, 'i'), 'known-spell count');
   const preparedSpells = typeof sourceSpellcasting?.preparedSpells === 'number' ? sourceSpellcasting.preparedSpells : number(new RegExp(`choose\\s+${numeric}\\s+spells\\s+from your spellbook`, 'i'), 'prepared-spell capacity');
-  const explicitSpellSlots = isRecord(sourceSpellcasting?.spellSlots) ? Object.entries(sourceSpellcasting.spellSlots).flatMap(([level, maximum]) => typeof maximum === 'number' && Number.isInteger(maximum) && maximum >= 0 && Number.isInteger(Number(level)) && Number(level) >= 1 ? [{ level: Number(level), maximum }] : []) : undefined;
+  const slot = (kind: LevelOneSpellSlot['kind'], level: number, maximum: number): LevelOneSpellSlot => ({ key: `${kind}:${level}`, kind, level, maximum, recovery: kind === 'pact' ? ['short-rest', 'long-rest'] : ['long-rest'] });
+  const explicitSpellSlots = isRecord(sourceSpellcasting?.spellSlots) ? Object.entries(sourceSpellcasting.spellSlots).flatMap(([level, maximum]) => typeof maximum === 'number' && Number.isInteger(maximum) && maximum >= 0 && Number.isInteger(Number(level)) && Number(level) >= 1 ? [slot(sourceSpellcasting?.progression === 'pact' ? 'pact' : 'spell', Number(level), maximum)] : []) : undefined;
   // The 2024 class records expose the authoritative progression kind while the
   // level-one slot table is represented in the linked class feature content.
   // Keep this adapter limited to the initial level supported by character creation.
-  const spellSlots = explicitSpellSlots ?? (featureText.length > 0 && sourceSpellcasting?.progression === 'full' ? [{ level: 1, maximum: 2 }] : undefined);
+  const spellSlots = explicitSpellSlots ?? (summary.ruleset === '2024' && sourceSpellcasting?.progression === 'pact' ? [slot('pact', 1, 1)] : featureText.length > 0 && sourceSpellcasting?.progression === 'full' ? [slot('spell', 1, 2)] : undefined);
   const spellcasting = sourceSpellcasting === undefined ? undefined : {
     ...(typeof sourceSpellcasting.ability === 'string' ? { spellcastingAbility: ({ int: 'Intelligence', wis: 'Wisdom', cha: 'Charisma' } as Record<string, string>)[sourceSpellcasting.ability] ?? sourceSpellcasting.ability } : {}),
     ...(cantripsKnown === undefined ? {} : { cantripsKnown }),
@@ -62,7 +66,7 @@ export function getLevelOneClassProgression(summary: ClassSourceSummary): LevelO
     spellLists: Array.isArray(sourceSpellcasting.spellLists) ? sourceSpellcasting.spellLists.filter((value): value is string => typeof value === 'string') : [],
     ...(spellSlots === undefined ? {} : { spellSlots }), ...(diagnostics.length === 0 ? {} : { diagnostics: [...diagnostics] }),
   };
-  return { classIdentifier: summary.source.identifier ?? '', level: 1, proficiencyBonus: 2, ...(spellcasting === undefined ? {} : { spellcasting }), scales: summary.scales?.map((scale) => {
+  return { classIdentifier: summary.source.identifier ?? '', level: 1, proficiencyBonus: 2, ...(spellcasting === undefined ? {} : { spellcasting }), scales: summary.scales?.filter((scale) => scale.level <= 1 && scale.requiresChoice === undefined && (scale.classRestriction === undefined || scale.classRestriction === 'primary')).map((scale) => {
     const selectedValue = evaluateScaleAtLevel(scale.values, 1);
     const { value: _numericValue, ...scaleSummary } = scale;
     return { ...scaleSummary, ...(selectedValue?.type === 'number' ? { value: selectedValue.value } : {}) };

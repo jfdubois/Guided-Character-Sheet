@@ -91,7 +91,7 @@ export function getEquipmentChoiceLabel(node: EquipmentPackageNode): string {
 
 export function getEquipmentOptionContents(node: EquipmentPackageNode): string[] {
   if (node.type === 'AND') return (node.children ?? []).flatMap(getEquipmentOptionContents);
-  if (node.type === 'OR') return ['Choose an option'];
+  if (node.type === 'OR') return [(node.children ?? []).map((child) => getEquipmentOptionContents(child).join(', ')).filter(Boolean).join(' or ') || 'Choose an option'];
   if (node.type === 'linked') return [node.item?.name ?? `Item ${node.key?.split('.').at(-1) ?? 'source'}`];
   if (node.type === 'currency') return [node.currency ? `${node.currency.amount} ${node.currency.denomination.toUpperCase()}` : 'Currency'];
   if (node.semantic) return [`Choose a ${node.semantic.category}`];

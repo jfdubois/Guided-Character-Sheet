@@ -1,6 +1,11 @@
 import type { FoundryUsesSummary } from './foundry-activity-summary';
 
 export type MutableReset = 'none' | 'short-rest' | 'long-rest';
+export interface MutableRecoveryProfile {
+  period: Exclude<MutableReset, 'none'>;
+  type: 'recover-all' | 'formula';
+  formula?: string;
+}
 
 /** Normalize only recovery periods supported by the pinned Foundry source. */
 export function mutableResetForPeriod(period: string): MutableReset | undefined {
@@ -28,4 +33,16 @@ export function recoverableResetForUses(uses: FoundryUsesSummary | undefined): E
   if (!hasUsableMaximum) return undefined;
   const reset = mutableResetForRecovery(uses.recovery);
   return reset === 'short-rest' || reset === 'long-rest' ? reset : undefined;
+}
+
+/** Preserve supported Foundry recovery profiles without evaluating arbitrary formulas. */
+export function mutableRecoveryProfiles(uses: FoundryUsesSummary | undefined): MutableRecoveryProfile[] {
+  if (uses === undefined) return [];
+  return uses.recovery.flatMap((entry): MutableRecoveryProfile[] => {
+    const period = mutableResetForPeriod(entry.period);
+    if (period !== 'short-rest' && period !== 'long-rest') return [];
+    if (entry.type === undefined || entry.type === 'recoverAll') return [{ period, type: 'recover-all' }];
+    if (entry.type === 'formula' && typeof entry.formula === 'string' && entry.formula.trim() === entry.formula && entry.formula.length > 0) return [{ period, type: 'formula', formula: entry.formula }];
+    return [];
+  });
 }

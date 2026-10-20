@@ -109,6 +109,7 @@ export interface FoundrySourceCatalog {
   get(family: SourceFamily, ruleset: CharacterRuleset, sourcePath: string): Promise<FoundrySourceRecord | null>;
   getByUuid(uuid: string): Promise<FoundrySourceReference | null>;
   getRaw(sourcePath: string): Record<string, unknown> | undefined;
+  getRawRecord(sourcePath: string): Promise<Record<string, unknown> | undefined>;
   indexPack(pack: string): Promise<void>;
   resolveDependencies(value: unknown, ruleset?: CharacterRuleset): Promise<ResolvedFoundryDependency[]>;
   getItemSummary(ruleset: CharacterRuleset, sourcePath: string): Promise<FoundryItemSummary | null>;
@@ -172,6 +173,13 @@ export function languageSelectorKey(selector: string): string {
   if (value[0] !== 'languages') return value.join(':');
   if (value[1] === 'standard' || value[1] === 'exotic') return value.slice(2).join(':');
   return value.slice(1).join(':');
+}
+
+export function languageSelectorLabel(selector: string): string | undefined {
+  const canonical = canonicalizeLanguageSelector(selector);
+  if (canonical === null) return undefined;
+  const [, category, ...identifier] = canonical.split(':');
+  return FOUNDRY_LANGUAGES.find((language) => language.category === category && language.identifier === identifier.join(':'))?.label;
 }
 
 function languageSummary(option: FoundryLanguageOption, ruleset: CharacterRuleset): FoundryItemSummary {
@@ -274,6 +282,17 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
       return recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.Item.${parsed.id}`) ?? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.${parsed.id}`) ?? null;
     },
     getRaw(sourcePath) { return recordsByPath.get(sourcePath)?.raw; },
+    async getRawRecord(sourcePath) {
+      const cached = recordsByPath.get(sourcePath);
+      if (cached) return cached.raw;
+      if (!sourcePath.startsWith('packs/_source/') || !sourcePath.endsWith('.yml') || sourcePath.split('/').includes('..')) return undefined;
+      const fullPath = `${root}/${sourcePath}`;
+      if (!(await adapter.exists(fullPath))) return undefined;
+      let raw: unknown;
+      try { raw = parse(await adapter.read(fullPath)); } catch (error) { throw new Error(`Invalid source record ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`); }
+      if (!isRecord(raw)) throw new Error(`Invalid source record ${sourcePath}`);
+      return raw;
+    },
     indexPack,
     async resolveDependencies(value, ruleset) {
       const uuids = collectUuids(value);
@@ -315,11 +334,11 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
       return summary;
     },
     async searchItems(query, filters = {}) {
-      const packs = filters.ruleset === '2014' ? ['items'] : filters.ruleset === '2024' ? ['equipment24'] : ['items', 'equipment24'];
-      for (const pack of packs) await indexItemPack(pack, filters.ruleset);
+      const packs = filters.ruleset === '2014' ? ['items'] : ['items', 'equipment24'];
+      for (const pack of packs) await indexItemPack(pack, filters.ruleset === '2024' && pack === 'items' ? undefined : filters.ruleset);
       const normalizedQuery = query.trim().toLocaleLowerCase();
-      return [...itemSummaries.values()]
-        .filter((item) => filters.ruleset === undefined || item.ruleset === filters.ruleset)
+      return [...new Map([...itemSummaries.values()].map((item) => [item.sourcePath, item])).values()]
+        .filter((item) => filters.ruleset === undefined || item.ruleset === filters.ruleset || filters.ruleset === '2024' && item.ruleset === '2014' && item.pack === 'dnd5e.items')
         .filter((item) => filters.itemType === undefined || item.itemType === filters.itemType)
         .filter((item) => filters.rarity === undefined || item.rarity === filters.rarity)
         .filter((item) => filters.magic === undefined || item.magic === filters.magic)

@@ -7,6 +7,9 @@ export type Ability = typeof ABILITIES[number];
 export type AbilityScoreMethod = 'standard-array' | 'point-buy' | 'dice-rolling';
 export type AbilityRecord = Record<Ability, number>;
 export interface AbilityScoreSelection { method: AbilityScoreMethod; base: AbilityRecord; manual: AbilityRecord; rolls?: Partial<Record<Ability, number[]>>; }
+export interface StandardArrayDraft { method: 'standard-array'; base: Partial<AbilityRecord>; manual: AbilityRecord; }
+export interface RolledAbilityDraft { method: 'dice-rolling'; base: Partial<AbilityRecord>; manual: AbilityRecord; }
+export interface PointBuyDraft { method: 'point-buy'; base: AbilityRecord; manual: AbilityRecord; }
 export interface AbilityScoreResult { base: number; sourceBonus: number; manual: number; final: number; modifier: number; }
 export type AbilityScoreResults = Record<Ability, AbilityScoreResult>;
 export interface AbilityBonusSources { species: AbilityRecord; class: AbilityRecord; background: AbilityRecord; }
@@ -19,7 +22,26 @@ export function createDefaultAbilityScores(): AbilityScoreSelection {
   return { method: 'standard-array', base: { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 }, manual: zeroAbilities() };
 }
 
-export function createPointBuyAbilityScores(): AbilityScoreSelection {
+export function createStandardArrayDraft(): StandardArrayDraft {
+  return { method: 'standard-array', base: {}, manual: zeroAbilities() };
+}
+
+export function createRolledAbilityDraft(): RolledAbilityDraft {
+  return { method: 'dice-rolling', base: {}, manual: zeroAbilities() };
+}
+
+export function isValidRolledBase(value: number | undefined): boolean { return value !== undefined && Number.isInteger(value) && value >= 3 && value <= 18; }
+
+export function moveStandardArrayValue(draft: StandardArrayDraft, ability: Ability, value: number | undefined): StandardArrayDraft {
+  if (value !== undefined && !STANDARD_ARRAY.includes(value)) throw new Error('Invalid Standard Array value');
+  const base = { ...draft.base };
+  if (value !== undefined) for (const other of ABILITIES) if (other !== ability && base[other] === value) delete base[other];
+  if (value === undefined) delete base[ability];
+  else base[ability] = value;
+  return { method: 'standard-array', base, manual: { ...draft.manual } };
+}
+
+export function createPointBuyAbilityScores(): PointBuyDraft {
   return { method: 'point-buy', base: { str: 8, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }, manual: zeroAbilities() };
 }
 
@@ -28,7 +50,7 @@ export function getAbilityScoreMethodOptions(selected?: AbilityScoreMethod): Abi
     { value: '', label: 'Select an option', placeholder: true },
     { value: 'standard-array', label: 'Standard array', placeholder: false },
     { value: 'point-buy', label: 'Point buy', placeholder: false },
-    { value: 'dice-rolling', label: 'Dice rolling', placeholder: false },
+    { value: 'dice-rolling', label: 'Rolled scores (enter totals)', placeholder: false },
   ];
   return options.map((option) => ({ ...option, placeholder: option.value === '' ? selected === undefined : false }));
 }
@@ -65,6 +87,13 @@ export function pointBuyTotal(scores: AbilityRecord): number {
 }
 
 export function pointBuyRemaining(scores: AbilityRecord): number { return 27 - pointBuyTotal(scores); }
+
+export function canAffordPointBuyScore(scores: AbilityRecord, ability: Ability, value: number): boolean {
+  const oldCost = POINT_BUY_COSTS[scores[ability]];
+  const newCost = POINT_BUY_COSTS[value];
+  if (oldCost === undefined || newCost === undefined) return false;
+  return pointBuyTotal(scores) - oldCost + newCost <= 27;
+}
 
 export function collectAbilityBonuses(species: SpeciesSourceSummary | undefined, classSummary: ClassSourceSummary | undefined, progression: ClassProgressionSelection | undefined, background: BackgroundSourceSummary | undefined, backgroundSelection?: BackgroundAbilitySelection): AbilityBonusSources {
   const speciesBonuses = fixedBonuses(species?.advancements.map((entry) => entry.raw.configuration) ?? []);

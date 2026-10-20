@@ -32,7 +32,7 @@ export function flattenSelectedEquipment(roots: EquipmentPackageNode[], selectio
   const add = (node: EquipmentPackageNode): void => {
     if (node.type === 'OR') {
       const selectedId = selection.selected[node.nodeId];
-      const child = node.children?.find((candidate) => candidate.nodeId === selectedId);
+      const child = node.children?.length === 1 ? node.children[0] : node.children?.find((candidate) => candidate.nodeId === selectedId);
       if (child) add(child);
       return;
     }
@@ -112,13 +112,42 @@ export function replaceInventorySource(current: CharacterInventory, sourcePath: 
 
 export function addInventoryItem(inventory: CharacterInventory, source: FoundrySourceReference | FoundryItemSummary, quantity = 1): CharacterInventory {
   if (!Number.isInteger(quantity) || quantity <= 0) throw new Error('Invalid inventory quantity');
-  const result: CharacterInventory = { items: inventory.items.map(cloneInventoryEntry), currency: { ...inventory.currency } };
-  const existing = result.items.find((entry) => isFoundryInventoryEntry(entry) && entry.source.pack === source.pack && entry.source.id === source.id);
+  const result: CharacterInventory = { items: inventory.items.map(cloneInventoryEntry), currency: { ...inventory.currency }, ...(inventory.currencyProvenance === undefined ? {} : { currencyProvenance: inventory.currencyProvenance.map((value) => ({ ...value })) }) };
+  const existing = result.items.find((entry) => isFoundryInventoryEntry(entry) && entry.containerEntryId === undefined && entry.source.pack === source.pack && entry.source.id === source.id);
   if (existing) existing.quantity += quantity;
   else {
     const { itemType, category, rarity, magic, weight, price } = source as Partial<FoundryItemSummary>;
     result.items.push({ entryId: `source:${source.pack}:${source.id}`, source: { sourcePath: source.sourcePath, pack: source.pack, type: source.type, id: source.id, ...(source.identifier === undefined ? {} : { identifier: source.identifier }), name: source.name }, quantity, equipped: false, provenance: [], ...(itemType === undefined || magic === undefined ? {} : { item: { itemType, ...(category === undefined ? {} : { category }), ...(rarity === undefined ? {} : { rarity }), magic, ...(weight === undefined ? {} : { weight }), ...(price === undefined ? {} : { price }) } }) });
   }
+  return result;
+}
+
+export interface InventoryItemChanges {
+  added: Array<{ source: FoundryItemSummary; quantity: number }>;
+  removedEntryIds: string[];
+  quantityChanges: Array<{ entryId: string; delta: number }>;
+}
+
+export function applyInventoryItemChanges(inventory: CharacterInventory, changes: InventoryItemChanges): CharacterInventory {
+  const removed = new Set(changes.removedEntryIds);
+  let result: CharacterInventory = {
+    items: inventory.items.filter((entry) => !removed.has(entry.entryId)).map((entry) => {
+      const copy = cloneInventoryEntry(entry);
+      if (copy.containerEntryId !== undefined && removed.has(copy.containerEntryId)) delete copy.containerEntryId;
+      return copy;
+    }),
+    currency: { ...inventory.currency },
+    ...(inventory.currencyProvenance === undefined ? {} : { currencyProvenance: inventory.currencyProvenance.map((value) => ({ ...value })) }),
+  };
+  for (const change of changes.quantityChanges) {
+    if (removed.has(change.entryId)) continue;
+    const entry = result.items.find((item) => item.entryId === change.entryId);
+    if (entry === undefined) throw new Error(`Inventory item is no longer available: ${change.entryId}`);
+    const quantity = entry.quantity + change.delta;
+    if (!Number.isSafeInteger(change.delta) || !Number.isSafeInteger(quantity) || quantity < 1) throw new Error('Invalid inventory quantity');
+    entry.quantity = quantity;
+  }
+  for (const { source, quantity } of changes.added) result = addInventoryItem(result, source, quantity);
   return result;
 }
 

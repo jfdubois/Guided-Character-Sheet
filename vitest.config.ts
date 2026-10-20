@@ -8,6 +8,6 @@ export default defineConfig({
     },
   },
   test: {
-    exclude: [...configDefaults.exclude, 'tests/pinned-2024-character-creation-audit.test.ts'],
+    exclude: [...configDefaults.exclude, '**/.worktrees/**', 'tests/pinned-2024-character-creation-audit.test.ts', 'tests/pinned-2024-source-mapping-audit.test.ts'],
   },
 });

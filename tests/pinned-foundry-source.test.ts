@@ -6,6 +6,14 @@ import { projectFeatureSheet } from '../src/feature-sheet-model';
 import { calculateAbilityScores } from '../src/ability-scores';
 
 describe('pinned Foundry source adapter', () => {
+  it('finds the pinned Shortsword +1 when searching 2024 inventory items', async () => {
+    const matches = await createPinnedSourceIndex().searchItems('Shortsword', { ruleset: '2024' });
+    expect(matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Shortsword', pack: 'dnd5e.equipment24' }),
+      expect.objectContaining({ name: 'Shortsword +1', pack: 'dnd5e.items', ruleset: '2014' }),
+    ]));
+  }, 15_000);
+
   it('indexes the pinned 2024 source family', async () => {
     const adapter = createPinnedFoundryAdapter();
     await expect(adapter.exists(PINNED_FOUNDRY_ROOT)).resolves.toBe(true);
@@ -102,6 +110,8 @@ describe('pinned Foundry source adapter', () => {
     const sneakAttack = features.groups.flatMap((group) => group.entries).find((entry) => entry.name === 'Sneak Attack');
 
     expect(sneakAttack?.description).toMatchObject({ kind: 'available', value: expect.stringContaining('Current Sneak Attack Damage: 3d6') });
+    const actions = projectActionSheet(document, { featureActivities: sneakAttack?.activities.map((activity) => ({ sourceName: sneakAttack.name, activity })) ?? [], proficiencyBonus: { kind: 'available', value: 3 }, weaponTraining: [] });
+    expect(actions.groups.flatMap((group) => group.entries).find((entry) => entry.name === 'Sneak Attack')?.range).toBe('Self');
   });
 
   it('projects the pinned 2024 Dragonborn Breath Weapon into authoritative action metadata', async () => {

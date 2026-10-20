@@ -9,6 +9,7 @@ import type { SheetValue } from './character-sheet-model';
 import { isRecord } from './foundry-utils';
 import { buildGrantedFeatConfiguration, restoreGrantedFeatConfiguration, validateGrantedFeatConfiguration, type GrantedFeatChoiceConfiguration } from './granted-feat-configuration';
 import type { MutableSpellOwnership } from './mutable-character-state';
+import type { PassiveEffectContribution } from './passive-effects';
 
 export interface SpellSheetRow {
   name: string;
@@ -58,6 +59,8 @@ export interface SpellSheetProjection {
   preparedCount?: number;
   preparedCapacity?: number;
   highestCastableSpellLevel?: number;
+  cantripCapacity?: number;
+  cantripCapacityBonus?: number;
   warnings: string[];
 }
 
@@ -70,6 +73,7 @@ export interface SpellSheetProjectionInput {
   proficiencyBonus?: SheetValue<number>;
   spellSummaries: ReadonlyMap<string, FoundrySpellSummary>;
   grantedSpells?: FoundrySourceReference[];
+  passiveEffects?: PassiveEffectContribution[];
 }
 
 export function projectSpellSheet(document: CharacterDocument, input: SpellSheetProjectionInput): SpellSheetProjection {
@@ -145,7 +149,10 @@ export function projectSpellSheet(document: CharacterDocument, input: SpellSheet
   });
   const unresolvedSpells = [...unresolved.values()];
   const hasCaster = classProgression?.spellcasting !== undefined || abilityName !== undefined || allRows.length > 0 || unresolvedSpells.length > 0;
-  return { kind: hasCaster ? 'available' : 'empty', ...(hasCaster ? {} : { reason: 'No spellcasting progression is available.' }), castingAbility: abilityName === undefined ? missing(casting.conflict ?? 'Spellcasting ability is unavailable.') : available(abilityName), spellModifier, spellAttack, saveDc, cantrips, levels, unresolvedSpells, freeUses, preparedCount, ...(preparedCapacity === undefined ? {} : { preparedCapacity }), ...(highestCastableSpellLevel === undefined ? {} : { highestCastableSpellLevel }), warnings };
+  const cantripCapacityBonus = (input.passiveEffects ?? []).filter((effect) => effect.target === 'cantrip-capacity').reduce((total, effect) => total + effect.value, 0);
+  const baseCantripCapacity = classProgression?.spellcasting?.cantripsKnown;
+  const cantripCapacity = baseCantripCapacity === undefined ? undefined : baseCantripCapacity + cantripCapacityBonus;
+  return { kind: hasCaster ? 'available' : 'empty', ...(hasCaster ? {} : { reason: 'No spellcasting progression is available.' }), castingAbility: abilityName === undefined ? missing(casting.conflict ?? 'Spellcasting ability is unavailable.') : available(abilityName), spellModifier, spellAttack, saveDc, cantrips, levels, unresolvedSpells, freeUses, preparedCount, ...(cantripCapacity === undefined ? (cantripCapacityBonus > 0 ? { cantripCapacityBonus } : {}) : { cantripCapacity }), ...(preparedCapacity === undefined ? {} : { preparedCapacity }), ...(highestCastableSpellLevel === undefined ? {} : { highestCastableSpellLevel }), warnings };
 }
 
 function collectSelected(document: CharacterDocument, input: SpellSheetProjectionInput): Array<{ reference: FoundrySourceReference; ownership: string; grantMaximum?: number; grantRecoveryPeriod?: string; grantPreparation?: string; grantRequireSlot?: boolean }> {
@@ -183,6 +190,7 @@ function collectSelected(document: CharacterDocument, input: SpellSheetProjectio
 }
 
 function preparationApplies(row: SpellSheetRow): boolean {
+  if (row.level === 0) return false;
   return row.grantPreparation !== 'always' && (row.source.kind !== 'available' || row.source.value.preparation !== 'always');
 }
 

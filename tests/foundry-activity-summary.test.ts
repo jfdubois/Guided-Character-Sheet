@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { readFoundryActivities, readFoundryUsesDiagnostic } from '../src/foundry-activity-summary';
+import { readFoundryActivities, readFoundryUses, readFoundryUsesDiagnostic } from '../src/foundry-activity-summary';
 
 describe('Foundry activity summaries', () => {
+  it('preserves recovery formulas used by rest automation', () => {
+    expect(readFoundryUses({ uses: { max: '2', recovery: [{ period: 'lr', type: 'recoverAll' }, { period: 'sr', type: 'formula', formula: '1' }] } })).toEqual({ maximum: '2', recovery: [{ period: 'lr', type: 'recoverAll' }, { period: 'sr', type: 'formula', formula: '1' }] });
+  });
   it('reports malformed top-level uses instead of silently dropping them', () => {
     expect(readFoundryUsesDiagnostic({ uses: { max: { invalid: true }, recovery: 'shortRest' } })).toEqual({ diagnostics: ['uses.recovery must be an array', 'uses.max must be a string or number'] });
   });
@@ -130,6 +133,13 @@ describe('Foundry activity summaries', () => {
   it('retains static save and target presentation fields without interpreting them', () => {
     const result = readFoundryActivities({ activities: { breath: { _id: 'breath', type: 'save', target: { template: { type: 'cone', size: '15', units: 'ft' }, affects: { type: 'creature' } }, save: { ability: ['dex'], dc: { calculation: 'con' } } } } });
     expect(result.activities[0]).toMatchObject({ target: { template: { type: 'cone', size: '15', units: 'ft' }, affects: { type: 'creature' } }, save: { ability: ['dex'], dc: { calculation: 'con' } } });
+  });
+
+  it('drops blank target-template fields while retaining a concrete affected target', () => {
+    const result = readFoundryActivities({ activities: { damage: { _id: 'damage', type: 'damage', range: { units: 'self', special: '' }, target: { template: { type: '', size: '', width: '', units: '' }, affects: { type: 'creature' } } } } });
+
+    expect(result.activities[0]).toMatchObject({ range: { units: 'self', special: '' }, target: { affects: { type: 'creature' } } });
+    expect(result.activities[0]?.target?.template).toBeUndefined();
   });
 
   it('accepts scalar save abilities used by spell activity records', () => {

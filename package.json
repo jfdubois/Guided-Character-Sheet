@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "audit:2024": "vitest run --config vitest.audit.config.ts",
+    "audit:2024:mapping": "vitest run --config vitest.mapping-audit.config.ts",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs"
   },

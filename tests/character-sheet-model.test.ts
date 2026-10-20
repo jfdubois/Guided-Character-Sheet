@@ -4,12 +4,14 @@ import { projectCharacterSheet } from '../src/character-sheet-model';
 import type { CharacterDocument } from '../src/character-model';
 import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from '../src/character-sources';
 import type { FoundryItemSummary, FoundrySourceReference } from '../src/foundry-source-catalog';
+import { createPinnedSourceIndex } from './support/pinned-foundry-source';
 
 const abilityScores: AbilityScoreSelection = {
   method: 'standard-array',
   base: { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 },
   manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 },
 };
+const sourceRef = (name: string): FoundrySourceReference => ({ sourcePath: `${name}.yml`, pack: 'dnd5e.test', type: 'feat', id: name.toLocaleLowerCase(), name });
 
 const document: CharacterDocument = {
   format: 1,
@@ -66,6 +68,102 @@ const soldier: BackgroundSourceSummary = {
 };
 
 describe('character sheet projection', () => {
+  it('projects pinned Criminal Alert as full Initiative proficiency and removes it with the grant', async () => {
+    const pinnedBackground = await createPinnedSourceIndex().getBackgroundSummary('2024', 'packs/_source/origins24/backgrounds/criminal.yml');
+    const criminalDocument = structuredClone(document);
+    criminalDocument.background = { sourcePath: pinnedBackground.source.sourcePath, identifier: 'criminal', id: pinnedBackground.source.id };
+    const withAlert = projectCharacterSheet(criminalDocument, { species, class: fighter, background: pinnedBackground, warnings: [] });
+    const withoutAlert = projectCharacterSheet(criminalDocument, { species, class: fighter, background: { ...pinnedBackground, grantedFeats: [], grantedFeat: undefined }, warnings: [] });
+    expect(withAlert.header.initiative).toEqual({ kind: 'available', value: 4 });
+    expect(withoutAlert.header.initiative).toEqual({ kind: 'available', value: 2 });
+  });
+
+  it('uses passive weapon proficiency when projecting equipped weapon attacks', () => {
+    const flailSource: FoundrySourceReference = { sourcePath: 'flail.yml', pack: 'dnd5e.equipment24', type: 'weapon', id: 'flail', name: 'Flail' };
+    const flail: FoundryItemSummary = { ...flailSource, ruleset: '2024', itemType: 'weapon', category: 'martialM', magic: false, equippable: true, properties: [], damage: { number: 1, denomination: 8, types: ['bludgeoning'] }, activities: [{ id: 'attack', type: 'attack', activation: { type: 'action' }, attack: { type: 'melee', classification: 'weapon' }, consumption: [] }] };
+    const armed = structuredClone(document);
+    armed.mutable = { preparedSpells: [], inventory: { items: [{ entryId: 'flail', source: flailSource, quantity: 1, equipped: false, provenance: [] }], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [{ entryId: 'flail', equipped: true, attuned: false }], resources: [] };
+    const classWithPassiveTraining = { ...fighter, features: [{ advancementId: 'grant', level: 1, source: sourceRef('Martial training'), activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.traits.weaponProf.value', type: 'add', value: 'mar' }] } }] }] };
+    const sheet = projectCharacterSheet(armed, { species, class: classWithPassiveTraining, background: soldier, inventoryItems: new Map([['flail', { kind: 'available', value: flail }]]), warnings: [] });
+    expect(sheet.actions?.groups.find(({ key }) => key === 'attacks')?.entries.find(({ name }) => name === 'Flail')?.attackBonus).toEqual({ kind: 'available', value: 5 });
+  });
+
+  it('keeps the higher numeric species sense when a passive upgrade is lower', () => {
+    const summary = { ...species, features: [{ source: sourceRef('Sight'), level: 1, automatic: true, activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.attributes.senses.darkvision', type: 'upgrade', value: 30 }] } }] }] };
+    const sheet = projectCharacterSheet(document, { species: summary, class: fighter, background: soldier, warnings: [] });
+    expect(sheet.senses.find(({ label }) => label === 'Darkvision')?.value).toEqual({ kind: 'available', value: '60 ft.' });
+  });
+
+  it('uses the full source label for selected language proficiencies', () => {
+    const sheet = projectCharacterSheet(document, {
+      species,
+      class: fighter,
+      background: { ...soldier, languages: ['languages:exotic:cant', 'languages:exotic:primordial:aquan'] },
+      warnings: [],
+    });
+
+    expect(sheet.training.find(({ label }) => label === 'Languages')?.values).toEqual({
+      kind: 'available', value: ['Common', 'Primordial (Aquan)', "Thieves' Cant"],
+    });
+  });
+
+  it('projects eligible Alert and direct feature additions onto initiative, training, and skill checks', () => {
+    const effect = (key: string, type: string, value: unknown) => ({ disabled: false, transfer: true, system: { changes: [{ key, type, value }] } });
+    const sheet = projectCharacterSheet(document, {
+      class: { ...fighter, features: [{ advancementId: 'level-one', level: 1, source: { sourcePath: 'class-feature.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'cleric-order', name: 'Divine Order' }, activeEffects: [
+        effect('system.traits.armorProf.value', 'add', 'hvy'),
+        effect('system.traits.weaponProf.value', 'add', 'mar'),
+        effect('system.skills.arc.bonuses.check', 'add', '(max(1,@abilities.wis.mod))'),
+        effect('system.scale.cleric.cantrips-known.value', 'add', 1),
+      ] }], advancements: [{ id: 'cleric-order', type: 'ItemGrant', level: 1, title: 'Divine Order', hint: '', dependencies: [], raw: {} }] },
+      species: { ...species, features: [{ source: { sourcePath: 'keen-sight.yml', pack: 'dnd5e.origins24', type: 'feat', id: 'keen-sight', name: 'Keen sight' }, level: 1, automatic: true, activeEffects: [effect('system.attributes.senses.darkvision', 'upgrade', 120)] }] },
+      background: { ...soldier, grantedFeats: [{ source: { sourcePath: 'alert.yml', pack: 'dnd5e.origin-feats', type: 'feat', id: 'alert', name: 'Alert' }, advancements: [], activeEffects: [effect('flags.dnd5e.initiativeAlert', 'add', true)] }] },
+      warnings: [],
+    });
+    expect(sheet.header.initiative).toEqual({ kind: 'available', value: 4 });
+    expect(sheet.training.find(({ label }) => label === 'Armor')?.values).toEqual({ kind: 'available', value: ['Heavy armor', 'Light armor', 'Medium armor'] });
+    expect(sheet.training.find(({ label }) => label === 'Weapons')?.values).toEqual({ kind: 'available', value: ['Martial weapons', 'Simple weapons'] });
+    expect(sheet.skills.find(({ key }) => key === 'arc')?.modifier).toEqual({ kind: 'available', value: 2 });
+    expect(sheet.senses.find(({ label }) => label === 'Darkvision')?.value).toEqual({ kind: 'available', value: '120 ft.' });
+    expect(sheet.spells?.cantripCapacityBonus).toBe(1);
+    const withoutAlert = projectCharacterSheet(document, { species, class: fighter, background: soldier, warnings: [] });
+    expect(withoutAlert.header.initiative).toEqual({ kind: 'available', value: 2 });
+  });
+
+  it('deduplicates weapon proficiency labels represented by different selectors', () => {
+    const sheet = projectCharacterSheet(document, {
+      species,
+      class: { ...fighter, proficiencies: { ...fighter.proficiencies!, weapons: ['weapon:mar:rapier', 'weapon:rapier'] } },
+      background: soldier,
+      warnings: [],
+    });
+
+    expect(sheet.training.find(({ label }) => label === 'Weapons')?.values).toEqual({ kind: 'available', value: ['Rapier'] });
+  });
+
+  it('uses the authoritative weapon name for equivalent hand-crossbow selectors', () => {
+    const sheet = projectCharacterSheet(document, {
+      species,
+      class: { ...fighter, proficiencies: { ...fighter.proficiencies!, weapons: ['weapon:mar:handcrossbow', 'weapon:handcrossbow'] } },
+      background: soldier,
+      weaponLabels: new Map([['weapon:mar:handcrossbow', 'Hand Crossbow'], ['weapon:handcrossbow', 'Hand Crossbow']]),
+      warnings: [],
+    });
+    expect(sheet.training.find(({ label }) => label === 'Weapons')?.values).toEqual({ kind: 'available', value: ['Hand Crossbow'] });
+  });
+
+  it('projects creature type as an identity fact rather than a defense', () => {
+    const sheet = projectCharacterSheet(document, {
+      species: { ...species, creatureType: { value: 'humanoid' } },
+      class: fighter,
+      background: soldier,
+      warnings: [],
+    });
+
+    expect(sheet.identity.creatureType).toEqual({ kind: 'available', value: 'Humanoid' });
+    expect(sheet.defenses).toEqual({ resistances: [] });
+  });
+
   it('shows concrete tool selections and omits category or wildcard selectors', () => {
     const sheet = projectCharacterSheet(document, {
       species,
@@ -78,6 +176,17 @@ describe('character sheet projection', () => {
       warnings: [],
     });
     expect(sheet.training.find(({ label }) => label === 'Tools')).toEqual({ label: 'Tools', values: { kind: 'available', value: ["Calligrapher's supplies", 'Lyre', 'Mystery'] } });
+  });
+
+  it('names the source-backed thieves tool proficiency on the completed sheet', () => {
+    const sheet = projectCharacterSheet(document, {
+      species,
+      class: { ...fighter, proficiencies: { ...fighter.proficiencies!, tools: ['tool:thief'] } },
+      background: soldier,
+      warnings: [],
+    });
+
+    expect(sheet.training.find(({ label }) => label === 'Tools')?.values).toEqual({ kind: 'available', value: ['Gaming set', "Thieves' tools"] });
   });
 
   it('routes only entitled feature activities to Actions while retaining the static combat reference', () => {
@@ -149,8 +258,10 @@ describe('character sheet projection', () => {
       class: { ...fighter, advancements: [{ ...masteryAdvancement, type: 'ItemChoice' }] },
     });
 
-    expect(mastered.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]?.description).toBe('A light blade.\nMastery: Nick');
+    expect(mastered.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]).toMatchObject({ description: 'A light blade.', weaponMastery: 'Nick' });
+    expect(mastered.actions?.weaponReferences).toContainEqual({ name: 'Nick' });
     expect(unmastered.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]?.description).toBe('A light blade.');
+    expect(unmastered.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]?.weaponMastery).toBeUndefined();
     expect(otherMastery.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]?.description).toBe('A light blade.');
     expect(nonTraitMastery.actions?.groups.find(({ key }) => key === 'attacks')?.entries[0]?.description).toBe('A light blade.');
   });
@@ -166,6 +277,12 @@ describe('character sheet projection', () => {
     expect(sheet.header.inspiration).toEqual({ kind: 'available', value: false });
     finalized.mutable.hitPoints = { current: 12, maximum: 10, maximumOverride: 15, temporary: 0 };
     expect(projectCharacterSheet(finalized, { species, class: fighter, background: soldier, warnings: [] }).header.hitPoints).toEqual({ kind: 'available', value: { current: 12, maximum: 15, temporary: 0 } });
+  });
+  it('does not add Dwarven Toughness to finalized maximum HP a second time', () => {
+    const dwarf = { ...species, features: [{ source: sourceRef('Dwarven Toughness'), level: 1, automatic: true, activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.attributes.hp.bonuses.level', type: 'add', value: 1 }] } }], hitPointModifiers: [{ perLevel: 1, source: sourceRef('Dwarven Toughness') }] }] };
+    const finalized = structuredClone(document);
+    finalized.mutable = { preparedSpells: [], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [], resources: [], hitPoints: { current: 11, maximum: 11, temporary: 0 } };
+    expect(projectCharacterSheet(finalized, { species: dwarf, class: fighter, background: soldier, warnings: [] }).header.hitPoints).toEqual({ kind: 'available', value: { current: 11, maximum: 11, temporary: 0 } });
   });
   it('integrates equipped armor and Stealth disadvantage into the sheet', () => {
     const armorSource: FoundrySourceReference = { sourcePath: 'packs/_source/equipment24/armor/medium/scale-mail.yml', pack: 'dnd5e.equipment24', type: 'equipment', id: 'scale-mail', name: 'Scale Mail' };
@@ -235,6 +352,18 @@ describe('character sheet projection', () => {
     expect(document).toEqual(before);
   });
 
+  it('uses the selected character level for proficiency-based sheet values', () => {
+    const levelFive = {
+      ...document,
+      classProgressions: [{ ...document.classProgressions![0]!, targetLevel: 5 }],
+    };
+    const sheet = projectCharacterSheet(levelFive, { species, class: fighter, background: soldier, warnings: [] });
+
+    expect(sheet.header.proficiencyBonus).toEqual({ kind: 'available', value: 3 });
+    expect(sheet.savingThrows.find(({ ability }) => ability === 'str')?.modifier).toEqual({ kind: 'available', value: 6 });
+    expect(sheet.skills.find(({ key }) => key === 'ath')?.modifier).toEqual({ kind: 'available', value: 6 });
+  });
+
   it('applies expertise as double proficiency and keeps stale later-level selections inactive', () => {
     const expertiseAdvancement = { id: 'expertise', type: 'Trait', level: 1, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: 2, pool: ['skills:*'] } } };
     const laterAdvancement = { id: 'later-expertise', type: 'Trait', level: 6, title: 'Expertise', hint: '', dependencies: [], raw: { configuration: { mode: 'expertise', choices: 2, pool: ['skills:*'] } } };
@@ -255,11 +384,13 @@ describe('character sheet projection', () => {
         { damageType: 'poison', source: sourceRef('Dwarven Resilience'), advancementId: 'dwarf-resistance', selected: true },
         { damageType: 'acid', source: sourceRef('Draconic Ancestry'), advancementId: 'dragon-resistance', selected: false },
       ],
-      rollAnnotations: [
-        { target: 'saving-throw', ability: 'int', mode: 'advantage', source: sourceRef('Gnomish Cunning') },
-        { target: 'saving-throw', ability: 'int', mode: 'disadvantage', source: sourceRef('Test condition') },
+      features: [
+        { source: sourceRef('Gnomish Cunning'), level: 1, automatic: true, rollAnnotations: [{ target: 'saving-throw', ability: 'int', mode: 'advantage', source: sourceRef('Gnomish Cunning') }] },
+        { source: sourceRef('Test condition'), level: 1, automatic: true, rollAnnotations: [{ target: 'saving-throw', ability: 'int', mode: 'disadvantage', source: sourceRef('Test condition') }] },
+        { source: sourceRef('Dwarven Resilience'), level: 1, automatic: true, savingThrowNotes: [{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: sourceRef('Dwarven Resilience') }] },
+        { source: sourceRef('Future insight'), level: 5, automatic: true, rollAnnotations: [{ target: 'saving-throw', ability: 'wis', mode: 'advantage', source: sourceRef('Future insight') }] },
+        { source: sourceRef('Unselected insight'), level: 1, selection: { key: 'species:insight', value: 'unselected' }, rollAnnotations: [{ target: 'saving-throw', ability: 'cha', mode: 'advantage', source: sourceRef('Unselected insight') }] },
       ],
-      savingThrowNotes: [{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: sourceRef('Dwarven Resilience') }],
     };
     const configuredDocument = {
       ...document,
@@ -271,7 +402,8 @@ describe('character sheet projection', () => {
 
     const sheet = projectCharacterSheet(configuredDocument, { species: speciesWithFacts, class: fighter, background: soldier, warnings: [] });
 
-    expect(sheet.defenses).toEqual({ creatureType: { kind: 'available', value: 'humanoid' }, resistances: [
+    expect(sheet.identity.creatureType).toEqual({ kind: 'available', value: 'Humanoid' });
+    expect(sheet.defenses).toEqual({ resistances: [
       { damageType: 'poison', source: 'Dwarven Resilience' },
       { damageType: 'acid', source: 'Draconic Ancestry' },
     ] });
@@ -279,6 +411,8 @@ describe('character sheet projection', () => {
       { marker: 'A', source: 'Gnomish Cunning' },
       { marker: 'D', source: 'Test condition' },
     ]);
+    expect(sheet.savingThrows.find(({ ability }) => ability === 'wis')?.annotations).toEqual([]);
+    expect(sheet.savingThrows.find(({ ability }) => ability === 'cha')?.annotations).toEqual([]);
     expect(sheet.savingThrowNotes).toEqual([{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: 'Dwarven Resilience' }]);
   });
 

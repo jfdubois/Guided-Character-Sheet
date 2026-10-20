@@ -91,4 +91,20 @@ describe('starting equipment', () => {
       ],
     })).toEqual(['Greataxe', 'Choose a weapon']);
   });
+
+  it('shows both nested Fighter equipment packages instead of an OR token', () => {
+    const choice = {
+      nodeId: 'fighter-package', type: 'OR', diagnostics: [], children: [
+        { nodeId: 'heavy', type: 'AND', diagnostics: [], children: [
+          { nodeId: 'mail', type: 'linked', diagnostics: [], item: { sourcePath: 'chain-mail.yml', pack: 'test', type: 'equipment', id: 'mail', name: 'Chain Mail' } },
+          { nodeId: 'sword', type: 'linked', diagnostics: [], item: { sourcePath: 'greatsword.yml', pack: 'test', type: 'weapon', id: 'sword', name: 'Greatsword' } },
+        ] },
+        { nodeId: 'light', type: 'AND', diagnostics: [], children: [
+          { nodeId: 'leather', type: 'linked', diagnostics: [], item: { sourcePath: 'studded-leather.yml', pack: 'test', type: 'equipment', id: 'leather', name: 'Studded Leather Armor' } },
+          { nodeId: 'bow', type: 'linked', diagnostics: [], item: { sourcePath: 'longbow.yml', pack: 'test', type: 'weapon', id: 'bow', name: 'Longbow' } },
+        ] },
+      ],
+    };
+    expect(getEquipmentOptionContents(choice)).toEqual(['Chain Mail, Greatsword or Studded Leather Armor, Longbow']);
+  });
 });

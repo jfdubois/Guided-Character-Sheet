@@ -20,12 +20,57 @@ const finesseScores = calculateAbilityScores({
 });
 
 describe('action sheet projection', () => {
+  it('shows equipped weapon properties and unlocked mastery with one source-backed reference each', () => {
+    const entries = ['one', 'two'].map((entryId) => ({ entryId, source: ref(entryId, 'Shortsword'), quantity: 1, equipped: false, provenance: [] }));
+    const shortsword = weapon({ name: 'Shortsword', identifier: 'shortsword', subcategory: 'shortsword', properties: ['fin', 'lgt'], mastery: 'vex' });
+    const equipped = { ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: entries }, equipmentStatus: entries.map(({ entryId }) => ({ entryId, equipped: true, attuned: false })) } };
+    const input = { inventoryItems: new Map(entries.map(({ entryId }) => [entryId, { kind: 'available' as const, value: shortsword }])), proficiencyBonus: { kind: 'available' as const, value: 2 }, weaponTraining: ['weapon:mar'], weaponMasteries: new Set(['shortsword']), weaponPropertyDescriptions: new Map([['fin', 'Choose Strength or Dexterity.'], ['lgt', 'Make an extra attack.']]), weaponMasteryDescriptions: new Map([['vex', 'Gain advantage on the next attack.']]) };
+    const result = projectActionSheet(equipped, input);
+    expect(result.groups[0].entries[0]).toMatchObject({ weaponProperties: ['Finesse', 'Light'], weaponMastery: 'Vex' });
+    expect(result.weaponReferences).toEqual([
+      { name: 'Finesse', description: 'Choose Strength or Dexterity.' },
+      { name: 'Light', description: 'Make an extra attack.' },
+      { name: 'Vex', description: 'Gain advantage on the next attack.' },
+    ]);
+    expect(projectActionSheet(equipped, { ...input, weaponMasteries: new Set() }).weaponReferences?.map(({ name }) => name)).toEqual(['Finesse', 'Light']);
+  });
+  it('references weapon properties even when an attack is grouped as limited use', () => {
+    const entry = { entryId: 'bonus-weapon', source: ref('bonus-weapon', 'Bonus weapon'), quantity: 1, equipped: false, provenance: [] };
+    const item = weapon({ properties: ['lgt'], activities: [{ id: 'bonus-attack', type: 'attack', activation: { type: 'bonus' }, consumption: [], uses: { maximum: 1, recovery: [{ period: 'lr' }] } }] });
+    const result = projectActionSheet({ ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: [entry] }, equipmentStatus: [{ entryId: entry.entryId, equipped: true, attuned: false }] } }, { inventoryItems: new Map([[entry.entryId, { kind: 'available', value: item }]]), proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: [], weaponPropertyDescriptions: new Map([['lgt', 'Extra attack.']]) });
+    expect(result.weaponReferences).toEqual([{ name: 'Light', description: 'Extra attack.' }]);
+  });
   it('projects an equipped proficient ordinary weapon attack', () => {
     const entry = { entryId: 'flail-entry', source: ref('flail', 'Flail'), quantity: 1, equipped: false, provenance: [] };
     const result = projectActionSheet({ ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: [entry] }, equipmentStatus: [{ entryId: entry.entryId, equipped: true, attuned: false }] } }, {
       inventoryItems: new Map([[entry.entryId, { kind: 'available', value: weapon() }]]), abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: ['weapon:mar'],
     });
     expect(result.groups.find(({ key }) => key === 'attacks')?.entries[0]).toMatchObject({ name: 'Flail', attackBonus: { kind: 'available', value: 5 }, damage: '1d8+3 bludgeoning' });
+  });
+
+  it('adds proficiency for a specifically trained martial weapon without requiring mastery', () => {
+    const source = { ...ref('shortsword', 'Shortsword'), identifier: 'shortsword' };
+    const entry = { entryId: 'shortsword', source, quantity: 1, equipped: false, provenance: [] };
+    const shortsword = weapon({ ...source, category: 'martialM', subcategory: 'shortsword', properties: ['fin', 'lgt'], activities: [{ id: 'attack', type: 'attack', activation: { type: 'action' }, attack: { type: 'melee', classification: 'weapon' }, consumption: [] }] });
+    const equipped = { ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: [entry] }, equipmentStatus: [{ entryId: 'shortsword', equipped: true, attuned: false }] } };
+    const input = { inventoryItems: new Map([[entry.entryId, { kind: 'available' as const, value: shortsword }]]), abilityResults: finesseScores, proficiencyBonus: { kind: 'available' as const, value: 2 }, weaponTraining: ['weapon:sim', 'weapon:mar:shortsword'] };
+
+    expect(projectActionSheet(equipped, input).groups.find(({ key }) => key === 'attacks')?.entries[0]?.attackBonus).toEqual({ kind: 'available', value: 5 });
+    expect(projectActionSheet(equipped, { ...input, weaponTraining: ['weapon:sim'] }).groups.find(({ key }) => key === 'attacks')?.entries[0]?.attackBonus).toEqual({ kind: 'available', value: 3 });
+  });
+
+  it('adds the passive Archery contribution only to ranged weapon attacks', () => {
+    const entry = { entryId: 'shortbow', source: ref('shortbow', 'Shortbow'), quantity: 1, equipped: false, provenance: [] };
+    const shortbow = weapon({ ...ref('shortbow', 'Shortbow'), category: 'simpleR', range: { value: 80, long: 320, units: 'ft' }, activities: [{ id: 'attack', type: 'attack', activation: { type: 'action' }, attack: { type: 'ranged', classification: 'weapon' }, consumption: [] }] });
+    const equipped = { ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: [entry] }, equipmentStatus: [{ entryId: entry.entryId, equipped: true, attuned: false }] } };
+    const effect = { source: ref('archery', 'Archery', 'feat'), key: 'system.bonuses.rwak.attack', target: 'ranged-weapon-attack-bonus', operation: 'add', value: 2 } as const;
+    const result = projectActionSheet(equipped, { inventoryItems: new Map([[entry.entryId, { kind: 'available', value: shortbow }]]), abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: ['weapon:sim'], passiveEffects: [effect] });
+    expect(result.groups.find(({ key }) => key === 'attacks')?.entries.find(({ name }) => name === 'Shortbow')?.attackBonus).toEqual({ kind: 'available', value: 6 });
+
+    const meleeEntry = { entryId: 'flail', source: ref('flail', 'Flail'), quantity: 1, equipped: false, provenance: [] };
+    const melee = weapon({ ...ref('flail', 'Flail'), category: 'martialM' });
+    const meleeResult = projectActionSheet({ ...document, mutable: { ...document.mutable!, inventory: { ...document.mutable!.inventory, items: [meleeEntry] }, equipmentStatus: [{ entryId: 'flail', equipped: true, attuned: false }] } }, { inventoryItems: new Map([[meleeEntry.entryId, { kind: 'available', value: melee }]]), abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: ['weapon:mar'], passiveEffects: [effect] });
+    expect(meleeResult.groups.find(({ key }) => key === 'attacks')?.entries.find(({ name }) => name === 'Flail')?.attackBonus).toEqual({ kind: 'available', value: 5 });
   });
 
   it('projects pinned Foundry weapon defaults, range, magic bonus, and description', () => {
@@ -68,7 +113,8 @@ describe('action sheet projection', () => {
       inventoryItems: new Map([[entry.entryId, { kind: 'available', value: warPick }]]), abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: ['weapon:mar'], weaponMasteries: new Set(['war-pick']),
     });
 
-    expect(result.groups.find(({ key }) => key === 'attacks')?.entries[0]?.description).toBe('A piercing weapon.\nMastery: Sap');
+    expect(result.groups.find(({ key }) => key === 'attacks')?.entries[0]).toMatchObject({ description: 'A piercing weapon.', weaponMastery: 'Sap' });
+    expect(result.weaponReferences).toEqual([{ name: 'Sap' }]);
   });
 
   it('excludes unequipped, duplicate-status, and unattuned required-attunement weapons', () => {
@@ -143,6 +189,17 @@ describe('action sheet projection', () => {
   it('carries static save and target fields into the action reference', () => {
     const result = projectActionSheet(document, { spellRows: [], featureActivities: [{ sourceName: 'Breath Weapon', activity: { id: 'breath', name: 'Breath Weapon (Cone)', type: 'save', activation: { type: 'action' }, consumption: [], range: { units: 'self' }, target: { template: { type: 'cone', size: '15', units: 'ft' } }, save: { ability: ['dex'], dc: { calculation: 'con' } }, resolvedDamage: '1d10 fire' } }], abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: [] });
     expect(result.groups.find(({ key }) => key === 'actions')?.entries[0]).toMatchObject({ damage: '1d10 fire', range: 'Self; 15 ft. cone', saveDc: { kind: 'available', value: 11 }, saveAbility: 'dex', target: { template: { type: 'cone', size: '15', units: 'ft' } }, save: { ability: ['dex'], dc: { calculation: 'con' } } });
+  });
+
+  it('ignores blank template dimensions without dropping real line width', () => {
+    const result = projectActionSheet(document, { featureActivities: [
+      { sourceName: 'Sneak Attack', activity: { id: 'sneak', name: 'Sneak Attack', type: 'damage', consumption: [], range: { units: 'self' }, target: { template: { type: '', size: '', width: '', units: '' }, affects: { type: 'creature' } }, resolvedDamage: '1d6' } },
+      { sourceName: 'Breath Weapon', activity: { id: 'line', name: 'Breath Weapon (Line)', type: 'save', consumption: [], range: { units: 'self' }, target: { template: { type: 'line', size: '30', width: '5', units: 'ft' } }, save: { ability: ['dex'], dc: { calculation: 'con' } }, resolvedDamage: '1d10 fire' } },
+    ], abilityResults: scores, proficiencyBonus: { kind: 'available', value: 2 }, weaponTraining: [] });
+    const entries = result.groups.flatMap((group) => group.entries);
+
+    expect(entries.find((entry) => entry.name === 'Sneak Attack')?.range).toBe('Self');
+    expect(entries.find((entry) => entry.name === 'Breath Weapon (Line)')?.range).toBe('Self; 30 ft. line (5 ft. wide)');
   });
 
   it('leaves a custom save DC formula explicit instead of evaluating it', () => {

@@ -4,6 +4,7 @@ import { buildClassConfiguration, setClassSelection, toClassProgressionSelection
 import { createCharacterDocument, withOrigin, withRuleset, type CharacterDocument } from '../../src/character-model';
 import { projectCharacterSheet } from '../../src/character-sheet-model';
 import { projectFeatureSheet } from '../../src/feature-sheet-model';
+import { getEligibleSpeciesFeatures } from '../../src/species-feature-eligibility';
 import type { BackgroundAbilityScores, ClassAdvancementSummary, FoundrySourceReference, SourceIndex, SpeciesAdvancementSummary } from '../../src/character-sources';
 import type { FoundrySpellSummary } from '../../src/foundry-source-catalog';
 import { getBackgroundLanguageOptions, getBackgroundOverview, getBackgroundRenderState, getCharacterCreationSections, getClassFeatureCallouts, getClassRenderState, getSpeciesFeatureCallouts, getSpeciesRenderState, validateCharacterCreationReadiness } from '../../src/character-view';
@@ -301,14 +302,15 @@ export async function buildLevelOneCreationSheetProjection(index: SourceIndex, i
       const free = spellProjection.freeUses.find((entry) => entry.key === key);
       if (row !== undefined) projection.fixedSpells!.push({ sourcePath: source.sourcePath, advancementId: grant.advancementId, spellKey: key, ...(free === undefined ? {} : { freeUses: String(free.maximum), recovery: free.recoveryPeriod, requireSlot: false }) });
     }
-    const featureProjection = projectFeatureSheet({ ...speciesDocument, classProgressions: [{ class: { sourcePath: 'audit', identifier: 'audit', id: 'audit' }, targetLevel: 1, selections: [] }] }, { species: summary });
+    const configuredSpeciesDocument = { ...speciesDocument, speciesConfiguration: toSpeciesConfigurationSelection(configuration), classProgressions: [{ class: { sourcePath: 'audit', identifier: 'audit', id: 'audit' }, targetLevel: 1, selections: [] }] };
+    const featureProjection = projectFeatureSheet(configuredSpeciesDocument, { species: summary });
     for (const scale of summary.scales ?? []) {
       const value = scale.values.get(0);
-      const text = value === undefined ? undefined : value.type === 'dice' ? `${value.number ?? ''}d${value.faces}` : value.type === 'number' ? String(value.value) : `${value.value} ${value.units}`;
+      const text = value === undefined ? undefined : value.type === 'dice' ? `${value.number ?? ''}d${value.faces}` : value.type === 'number' || value.type === 'cr' ? String(value.value) : `${value.value} ${value.units}`;
       const resolved = featureProjection.groups.flatMap((group) => group.entries.flatMap((entry) => entry.activities.map((activity) => activity.resolvedDamage ?? ''))).some((damage) => text !== undefined && damage.includes(text));
       if (resolved) projection.scales!.push({ sourcePath: source.sourcePath, advancementId: scale.advancementId, value: text });
     }
-    const hitPointModifiers = summary.hitPointModifiers ?? [];
+    const hitPointModifiers = getEligibleSpeciesFeatures(configuredSpeciesDocument, summary).flatMap((feature) => feature.hitPointModifiers ?? []);
     if (hitPointModifiers.length > 0) {
       const state = createFinalizedMutableCharacterState(emptyInventory(), { classSourcePath: 'audit', classHitDie: 'd8', constitutionModifier: 0, spellSlots: [], permanentHitPointModifiers: hitPointModifiers.map((modifier) => ({ perLevel: modifier.perLevel, sourcePath: modifier.source.sourcePath })) });
       for (const expected of inventory.hpEffects.filter((entry) => entry.sourcePath === source.sourcePath)) if (state.hitPoints?.maximum === 8 + expected.value) projection.hpEffects!.push({ ...expected });

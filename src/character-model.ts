@@ -4,7 +4,7 @@ import type { ClassProgressionSelection } from './class-configuration';
 import { isRecord } from './foundry-utils';
 import { emptyInventory, isCharacterInventory, isFoundryInventoryEntry, replaceInventorySource, type CharacterInventory, type EquipmentSelection, type InventoryEntry } from './inventory';
 import { canonicalizeLanguageSelector, languageSelectorKey, type FoundrySourceReference } from './foundry-source-catalog';
-import { ABILITIES, validateAbilityScores, type Ability, type AbilityScoreSelection } from './ability-scores';
+import { ABILITIES, isValidRolledBase, pointBuyTotal, validateAbilityScores, type Ability, type AbilityScoreSelection, type PointBuyDraft, type RolledAbilityDraft, type StandardArrayDraft } from './ability-scores';
 import { createBackgroundAbilitySelection, validateBackgroundAbilitySelection, type BackgroundAbilityConfiguration, type BackgroundAbilitySelection } from './background-ability-configuration';
 import { isMutableCharacterState, type MutableCharacterState } from './mutable-character-state';
 import { isFoundrySourceReference, isSafeSourcePath } from './foundry-source-reference';
@@ -57,6 +57,7 @@ export interface CharacterDocument {
   backgroundEquipment?: EquipmentSelection;
   inventory?: CharacterInventory;
   abilityScores?: AbilityScoreSelection;
+  abilityScoreDraft?: StandardArrayDraft | RolledAbilityDraft | PointBuyDraft;
   mutable?: MutableCharacterState;
   [key: string]: unknown;
 }
@@ -80,6 +81,7 @@ export function parseCharacterDocument(value: unknown): CharacterDocument {
   if (value.backgroundEquipment !== undefined && !isEquipmentSelection(value.backgroundEquipment) || value.backgroundEquipment !== undefined && value.background === undefined) throw new Error('Invalid character document');
   if (value.inventory !== undefined && !isCharacterInventory(value.inventory)) throw new Error('Invalid character document');
   if (value.abilityScores !== undefined && !isAbilityScoreSelection(value.abilityScores)) throw new Error('Invalid character document');
+  if (value.abilityScoreDraft !== undefined && ((!isStandardArrayDraft(value.abilityScoreDraft) && !isRolledAbilityDraft(value.abilityScoreDraft) && !isPointBuyDraft(value.abilityScoreDraft) || isPointBuyDraft(value.abilityScoreDraft) && pointBuyTotal(value.abilityScoreDraft.base) === 27) || value.abilityScores !== undefined)) throw new Error('Invalid character document');
   if (value.mutable !== undefined && !isMutableCharacterState(value.mutable)) throw new Error('Invalid character document');
   const savedSpeciesConfiguration = value.speciesConfiguration;
   if (savedSpeciesConfiguration !== undefined && !isSpeciesConfigurationSelection(savedSpeciesConfiguration)) throw new Error('Invalid character document');
@@ -94,8 +96,11 @@ function sanitizeCharacterDocument(document: CharacterDocument): CharacterDocume
   if (next.backgroundEquipment !== undefined) next.backgroundEquipment = sanitizeEquipmentSelection(next.backgroundEquipment);
   if (next.backgroundChoices !== undefined) next.backgroundChoices = sanitizeBackgroundChoices(next.backgroundChoices);
   if (next.inventory !== undefined) next.inventory = { ...next.inventory, items: next.inventory.items.map(sanitizeInventoryEntry) };
+  if (next.abilityScoreDraft?.method === 'point-buy') next.abilityScoreDraft = { method: 'point-buy', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
+  else if (next.abilityScoreDraft?.method === 'standard-array') next.abilityScoreDraft = { method: 'standard-array', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
+  else if (next.abilityScoreDraft?.method === 'dice-rolling') next.abilityScoreDraft = { method: 'dice-rolling', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
   if (next.classProgressions !== undefined) next.classProgressions = next.classProgressions.map((progression) => ({ ...progression, selections: progression.selections.map((selection) => selection.kind === 'spell' && selection.selectionRole === undefined ? { ...selection, selectionRole: selection.level === 0 ? 'cantrips-known' : 'known-spells' } : selection) }));
-  if (next.mutable !== undefined) next.mutable = { ...next.mutable, ...(next.mutable.hitPoints === undefined ? {} : { hitPoints: { ...next.mutable.hitPoints, temporary: next.mutable.hitPoints.temporary ?? 0 } }), preparedSpells: next.mutable.preparedSpells.map(sanitizeSourceReference), inventory: { ...next.mutable.inventory, items: next.mutable.inventory.items.map(sanitizeInventoryEntry) }, equipmentStatus: next.mutable.equipmentStatus.map((status) => ({ ...status })), resources: next.mutable.resources.map((resource) => ({ ...resource })), ...(next.mutable.spellOverlay === undefined ? {} : { spellOverlay: { added: next.mutable.spellOverlay.added.map((entry) => ({ reference: sanitizeSourceReference(entry.reference), ownership: entry.ownership })), removed: next.mutable.spellOverlay.removed.map(sanitizeSourceReference) } }) };
+  if (next.mutable !== undefined) next.mutable = { ...next.mutable, ...(next.mutable.hitPoints === undefined ? {} : { hitPoints: { ...next.mutable.hitPoints, temporary: next.mutable.hitPoints.temporary ?? 0 } }), ...(next.mutable.hitDice === undefined ? {} : { hitDice: next.mutable.hitDice.map((pool) => ({ ...pool })) }), preparedSpells: next.mutable.preparedSpells.map(sanitizeSourceReference), inventory: { ...next.mutable.inventory, items: next.mutable.inventory.items.map(sanitizeInventoryEntry) }, equipmentStatus: next.mutable.equipmentStatus.map((status) => ({ ...status })), resources: next.mutable.resources.map((resource) => ({ ...resource, ...(resource.recovery === undefined ? {} : { recovery: resource.recovery.map((profile) => ({ ...profile })) }) })), ...(next.mutable.spellSlots === undefined ? {} : { spellSlots: next.mutable.spellSlots.map((slot) => ({ ...slot, ...(slot.recovery === undefined ? {} : { recovery: [...slot.recovery] }) })) }), ...(next.mutable.spellUses === undefined ? {} : { spellUses: next.mutable.spellUses.map((use) => ({ ...use, ...(use.recovery === undefined ? {} : { recovery: use.recovery.map((profile) => ({ ...profile })) }) })) }), ...(next.mutable.spellOverlay === undefined ? {} : { spellOverlay: { added: next.mutable.spellOverlay.added.map((entry) => ({ reference: sanitizeSourceReference(entry.reference), ownership: entry.ownership })), removed: next.mutable.spellOverlay.removed.map(sanitizeSourceReference) } }) };
   return next;
 }
 
@@ -165,6 +170,7 @@ export function withRuleset(document: CharacterDocument, ruleset: CharacterRules
   delete next.backgroundEquipment;
   delete next.inventory;
   delete next.abilityScores;
+  delete next.abilityScoreDraft;
   delete next.mutable;
   return next;
 }
@@ -179,7 +185,7 @@ export function withOrigin(document: CharacterDocument, origin: CharacterOriginR
   if (originChanged) delete next.background;
   if (originChanged) delete next.backgroundChoices;
   if (originChanged) { delete next.classEquipment; delete next.backgroundEquipment; delete next.inventory; }
-  if (originChanged) { delete next.abilityScores; delete next.mutable; }
+  if (originChanged) { delete next.abilityScores; delete next.abilityScoreDraft; delete next.mutable; }
   return next;
 }
 
@@ -200,6 +206,7 @@ export function withClassProgression(document: CharacterDocument, progression: C
     delete next.classEquipment;
     delete next.backgroundEquipment;
     delete next.abilityScores;
+    delete next.abilityScoreDraft;
     delete next.mutable;
     if (inventory === undefined || inventory.items.length === 0 && Object.values(inventory.currency).every((value) => value === 0)) delete next.inventory;
     else next.inventory = inventory;
@@ -216,7 +223,7 @@ export function withBackground(document: CharacterDocument, background: Characte
     if (current.background?.sourcePath !== undefined) next.inventory = replaceInventorySource(current.inventory ?? emptyInventory(), current.background.sourcePath, emptyInventory());
     delete next.backgroundEquipment;
   }
-  if (backgroundChanged) { delete next.abilityScores; delete next.mutable; }
+  if (backgroundChanged) { delete next.abilityScores; delete next.abilityScoreDraft; delete next.mutable; }
   return next;
 }
 
@@ -240,7 +247,39 @@ export function withInventory(document: CharacterDocument, inventory: CharacterI
 export function withAbilityScores(document: CharacterDocument, selection: AbilityScoreSelection): CharacterDocument {
   const current = parseCharacterDocument(document);
   if (!isAbilityScoreSelection(selection)) throw new Error('Invalid ability score selection');
-  return { ...current, abilityScores: structuredClone(selection) };
+  const next = { ...current, abilityScores: structuredClone(selection) };
+  delete next.abilityScoreDraft;
+  return next;
+}
+export function withStandardArrayDraft(document: CharacterDocument, draft: StandardArrayDraft): CharacterDocument {
+  const current = parseCharacterDocument(document);
+  if (!isStandardArrayDraft(draft)) throw new Error('Invalid Standard Array draft');
+  if (ABILITIES.every((ability) => draft.base[ability] !== undefined)) {
+    const base = Object.fromEntries(ABILITIES.map((ability) => [ability, draft.base[ability]])) as Record<Ability, number>;
+    return withAbilityScores(current, { method: 'standard-array', base, manual: { ...draft.manual } });
+  }
+  const next = { ...current, abilityScoreDraft: { method: 'standard-array' as const, base: { ...draft.base }, manual: { ...draft.manual } } };
+  delete next.abilityScores;
+  return next;
+}
+export function withRolledAbilityDraft(document: CharacterDocument, draft: RolledAbilityDraft): CharacterDocument {
+  const current = parseCharacterDocument(document);
+  if (!isRolledAbilityDraft(draft)) throw new Error('Invalid rolled ability draft');
+  if (ABILITIES.every((ability) => isValidRolledBase(draft.base[ability]))) {
+    const base = Object.fromEntries(ABILITIES.map((ability) => [ability, draft.base[ability]])) as Record<Ability, number>;
+    return withAbilityScores(current, { method: 'dice-rolling', base, manual: { ...draft.manual } });
+  }
+  const next = { ...current, abilityScoreDraft: { method: 'dice-rolling' as const, base: { ...draft.base }, manual: { ...draft.manual } } };
+  delete next.abilityScores;
+  return next;
+}
+export function withPointBuyDraft(document: CharacterDocument, draft: PointBuyDraft): CharacterDocument {
+  const current = parseCharacterDocument(document);
+  if (!isPointBuyDraft(draft)) throw new Error('Invalid Point Buy draft');
+  if (pointBuyTotal(draft.base) === 27) return withAbilityScores(current, { method: 'point-buy', base: { ...draft.base }, manual: { ...draft.manual } });
+  const next = { ...current, abilityScoreDraft: { method: 'point-buy' as const, base: { ...draft.base }, manual: { ...draft.manual } } };
+  delete next.abilityScores;
+  return next;
 }
 export function withMutableState(document: CharacterDocument, state: MutableCharacterState): CharacterDocument {
   const current = parseCharacterDocument(document);
@@ -368,6 +407,26 @@ function isEquipmentSelection(value: unknown): value is EquipmentSelection { ret
 function isStringRecord(value: unknown): value is Record<string, string> { return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string' && entry.length > 0); }
 function isReferenceRecord(value: unknown): boolean { return isRecord(value) && Object.values(value).every(isFoundrySourceReference); }
 function isAbilityScoreSelection(value: unknown): value is AbilityScoreSelection { return isRecord(value) && (value.method === 'standard-array' || value.method === 'point-buy' || value.method === 'dice-rolling') && isAbilityRecord(value.base) && isAbilityRecord(value.manual) && validateAbilityScores(value as unknown as AbilityScoreSelection).length === 0; }
+function isStandardArrayDraft(value: unknown): value is StandardArrayDraft {
+  if (!isRecord(value) || value.method !== 'standard-array' || !isRecord(value.base) || !isAbilityRecord(value.manual)) return false;
+  const manual = value.manual;
+  if (Object.keys(manual).length !== ABILITIES.length || !ABILITIES.every((ability) => ability in manual)) return false;
+  const entries = Object.entries(value.base);
+  const values = entries.map(([, score]) => score);
+  return entries.every(([ability, score]) => ABILITIES.includes(ability as Ability) && typeof score === 'number' && [8, 10, 12, 13, 14, 15].includes(score)) && new Set(values).size === values.length;
+}
+function isRolledAbilityDraft(value: unknown): value is RolledAbilityDraft {
+  if (!isRecord(value) || value.method !== 'dice-rolling' || !isRecord(value.base) || !isAbilityRecord(value.manual)) return false;
+  const manual = value.manual;
+  if (Object.keys(manual).length !== ABILITIES.length || !ABILITIES.every((ability) => ability in manual)) return false;
+  return Object.entries(value.base).every(([ability, score]) => ABILITIES.includes(ability as Ability) && typeof score === 'number' && Number.isInteger(score) && score > 0);
+}
+function isPointBuyDraft(value: unknown): value is PointBuyDraft {
+  if (!isRecord(value) || value.method !== 'point-buy' || !isRecord(value.base) || !isAbilityRecord(value.manual)) return false;
+  const base = value.base as Record<string, unknown>;
+  if (Object.keys(base).length !== ABILITIES.length || !ABILITIES.every((ability) => ability in base)) return false;
+  return Object.entries(base).every(([ability, score]) => ABILITIES.includes(ability as Ability) && typeof score === 'number' && Number.isInteger(score) && score >= 8 && score <= 15) && pointBuyTotal(value.base as Record<Ability, number>) <= 27;
+}
 function isAbilityRecord(value: unknown): value is Record<string, number> { return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'number' && Number.isInteger(entry)); }
 function isCompatibleBackground(ruleset: CharacterRuleset, background: CharacterBackgroundReference): boolean { return background.sourcePath.startsWith(ruleset === '2014' ? 'packs/_source/backgrounds/' : 'packs/_source/origins24/backgrounds/'); }
 function isClassAdvancementSelection(value: unknown): boolean {

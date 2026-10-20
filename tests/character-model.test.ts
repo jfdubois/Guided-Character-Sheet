@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createCharacterDocument, parseCharacterDocument, withAbilityScores, withBackground, withBackgroundAbilityScores, withBackgroundGrantedFeat, withBackgroundLanguages, withClassProgression, withName, withOrigin, withRuleset, withSpeciesConfiguration, type CharacterDocument } from '../src/character-model';
-import { createDefaultAbilityScores } from '../src/ability-scores';
+import { createCharacterDocument, parseCharacterDocument, withAbilityScores, withBackground, withBackgroundAbilityScores, withBackgroundGrantedFeat, withBackgroundLanguages, withClassProgression, withName, withOrigin, withRuleset, withSpeciesConfiguration, withStandardArrayDraft, withRolledAbilityDraft, withPointBuyDraft, type CharacterDocument } from '../src/character-model';
+import { createDefaultAbilityScores, createPointBuyAbilityScores } from '../src/ability-scores';
 import { createInitialMutableCharacterState } from '../src/mutable-character-state';
 import { createSpeciesConfiguration, setSpeciesChoice, setSpeciesSize, toSpeciesConfigurationSelection } from '../src/species-configuration';
 import type { BackgroundAbilityChoiceConfiguration } from '../src/background-ability-configuration';
@@ -169,6 +169,78 @@ describe('character model', () => {
   it('persists optional ability score selections', () => {
     const document = withAbilityScores(createCharacterDocument('Ayla', snapshot), { ...createDefaultAbilityScores(), manual: { str: -1, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } });
     expect(parseCharacterDocument(document).abilityScores).toMatchObject({ method: 'standard-array', manual: { str: -1 } });
+  });
+
+  it('persists an incomplete Point Buy draft and promotes only an exact 27-point allocation', () => {
+    const document = selected2024Background();
+    const initial = createPointBuyAbilityScores();
+    const incomplete = withPointBuyDraft(document, { ...initial, base: { ...initial.base, str: 15 } });
+    expect(parseCharacterDocument(JSON.parse(JSON.stringify(incomplete))).abilityScoreDraft).toMatchObject({ method: 'point-buy', base: { str: 15 } });
+    expect(incomplete.abilityScores).toBeUndefined();
+
+    const exact = withPointBuyDraft(incomplete, { ...initial, base: { str: 15, dex: 15, con: 15, int: 8, wis: 8, cha: 8 } });
+    expect(exact.abilityScoreDraft).toBeUndefined();
+    expect(exact.abilityScores).toMatchObject({ method: 'point-buy', base: { str: 15, dex: 15, con: 15, int: 8, wis: 8, cha: 8 } });
+  });
+
+  it('rejects a Point Buy draft that exceeds the 27-point budget', () => {
+    const document = selected2024Background();
+    const pointBuy = createPointBuyAbilityScores();
+    expect(() => withPointBuyDraft(document, { ...pointBuy, base: { str: 15, dex: 15, con: 15, int: 15, wis: 8, cha: 8 } })).toThrow('Invalid Point Buy draft');
+  });
+
+  it('rejects a Standard Array draft that assigns one value to two abilities', () => {
+    const document = selected2024Background();
+    const duplicate = { method: 'standard-array', base: { str: 15, dex: 15 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } };
+    expect(() => parseCharacterDocument({ ...document, abilityScoreDraft: duplicate })).toThrow('Invalid character document');
+  });
+
+  it('rejects a Standard Array draft with incomplete manual adjustment data', () => {
+    const document = selected2024Background();
+    expect(() => parseCharacterDocument({ ...document, abilityScoreDraft: { method: 'standard-array', base: { str: 15 }, manual: { str: 0 } } })).toThrow('Invalid character document');
+  });
+
+  it('replaces a pending Standard Array draft with a completed ability selection', () => {
+    const document = { ...selected2024Background(), abilityScoreDraft: { method: 'standard-array' as const, base: { str: 15 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } } };
+    expect(withAbilityScores(document, createDefaultAbilityScores()).abilityScoreDraft).toBeUndefined();
+  });
+
+  it('persists each incomplete Standard Array choice and withholds final ability scores', () => {
+    const initial = selected2024Background();
+    const first = withStandardArrayDraft(initial, { method: 'standard-array', base: { str: 15 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } });
+    const saved = parseCharacterDocument(JSON.parse(JSON.stringify(first)));
+    expect(saved.abilityScoreDraft?.base).toEqual({ str: 15 });
+    expect(saved.abilityScores).toBeUndefined();
+  });
+
+  it('promotes a completed Standard Array draft into validated ability scores', () => {
+    const document = selected2024Background();
+    const complete = { method: 'standard-array' as const, base: { str: 8, dex: 15, con: 14, int: 13, wis: 12, cha: 10 }, manual: { str: 0, dex: 1, con: 0, int: 0, wis: 0, cha: 0 } };
+    const saved = withStandardArrayDraft(document, complete);
+    expect(saved.abilityScoreDraft).toBeUndefined();
+    expect(saved.abilityScores).toMatchObject({ method: 'standard-array', base: complete.base, manual: complete.manual });
+  });
+
+  it('saves incomplete rolled scores without unlocking completed ability scores', () => {
+    const initial = selected2024Background();
+    const saved = withRolledAbilityDraft(initial, { method: 'dice-rolling', base: { str: 16 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } });
+    expect(parseCharacterDocument(JSON.parse(JSON.stringify(saved))).abilityScoreDraft).toMatchObject({ method: 'dice-rolling', base: { str: 16 } });
+    expect(saved.abilityScores).toBeUndefined();
+  });
+
+  it('promotes six valid rolled scores but retains an out-of-range score as a draft', () => {
+    const initial = selected2024Background();
+    const draft = { method: 'dice-rolling' as const, base: { str: 16, dex: 14, con: 13, int: 12, wis: 10, cha: 8 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } };
+    expect(withRolledAbilityDraft(initial, draft).abilityScores?.base).toEqual(draft.base);
+    const invalid = withRolledAbilityDraft(initial, { ...draft, base: { ...draft.base, str: 30 } });
+    expect(invalid.abilityScoreDraft?.base.str).toBe(30);
+    expect(invalid.abilityScores).toBeUndefined();
+  });
+
+  it('clears a partial Standard Array draft when the origin changes', () => {
+    const document = withStandardArrayDraft(selected2024Background(), { method: 'standard-array', base: { str: 15 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } });
+    const changed = withOrigin(document, { sourcePath: 'packs/_source/origins24/species/dwarf.yml', identifier: 'dwarf', id: 'dwarf-id' });
+    expect(changed.abilityScoreDraft).toBeUndefined();
   });
   it('persists a ruleset-compatible background after class selection', () => {
     const origin = { sourcePath: 'packs/_source/origins24/species/elf.yml', identifier: 'elf', id: 'elf-id' };

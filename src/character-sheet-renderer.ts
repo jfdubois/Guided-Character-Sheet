@@ -2,6 +2,7 @@ import { CHARACTER_SHEET_SECTIONS, isCharacterSheetSection, type CharacterSheetP
 import type { InventorySheetProjection, InventorySheetRow } from './inventory-sheet-model';
 import type { SpellSheetRow } from './spell-sheet-model';
 import type { FoundrySourceReference } from './foundry-source-catalog';
+import { CURRENCY_DENOMINATIONS } from './currency-transaction';
 
 export interface CharacterSheetCharacterOption { filePath: string; name: string; }
 
@@ -13,6 +14,8 @@ export interface CharacterSheetRenderOptions {
   onEdit(): void;
   onSectionChange(section: CharacterSheetSection): void;
   onToggleEquipment?(entryId: string, equipped: boolean): void;
+  onManageCurrency?(): void;
+  onManageItems?(): void;
   onToggleSpellSlot?(level: number, spent: boolean): void;
   onToggleSpellUse?(key: string, spent: boolean): void;
   onManageSpells?(): void;
@@ -20,6 +23,7 @@ export interface CharacterSheetRenderOptions {
   onToggleFeatureResource?(key: string, spent: boolean): void;
   onToggleInspiration?(active: boolean): void;
   onAdjustHitPoints?(): void;
+  onRest?(): void;
 }
 
 export function renderCharacterSheet(root: HTMLElement, sheet: CharacterSheetProjection, options: CharacterSheetRenderOptions): void {
@@ -28,7 +32,7 @@ export function renderCharacterSheet(root: HTMLElement, sheet: CharacterSheetPro
   renderHeader(layout, sheet, options);
   const body = layout.createDiv({ cls: 'guided-character-sheet__sheet-body' });
   if (options.selectedSection === 'abilities') renderAbilities(body, sheet);
-  else if (options.selectedSection === 'inventory') renderInventory(body, sheet.inventory, sheet.warnings, options.onToggleEquipment);
+  else if (options.selectedSection === 'inventory') renderInventory(body, sheet.inventory, sheet.warnings, options.onToggleEquipment, options.onManageCurrency, options.onManageItems);
   else if (options.selectedSection === 'spells') renderSpells(body, sheet.spells, sheet.warnings, options.onToggleSpellSlot, options.onToggleSpellUse, options.onManageSpells, options.onToggleSpellPreparation);
   else if (options.selectedSection === 'features-and-traits') renderFeatures(body, sheet.features, sheet.warnings);
   else if (options.selectedSection === 'actions') renderActions(body, sheet.actions, sheet.warnings, options.onToggleFeatureResource);
@@ -63,8 +67,10 @@ function renderHeader(root: HTMLElement, sheet: CharacterSheetProjection, option
   renderInspirationFact(facts, sheet.header.inspiration, options.onToggleInspiration);
 
   const actions = header.createDiv({ cls: 'guided-character-sheet__sheet-actions' });
-  const rest = actions.createEl('button', { text: 'Rest unavailable', attr: { type: 'button', 'aria-label': 'Rest unavailable' } });
-  rest.disabled = true;
+  const restAvailable = options.onRest !== undefined;
+  const rest = actions.createEl('button', { text: restAvailable ? 'Rest' : 'Rest unavailable', attr: { type: 'button', 'aria-label': restAvailable ? 'Take a rest' : 'Rest unavailable' } });
+  rest.disabled = !restAvailable;
+  if (options.onRest !== undefined) rest.addEventListener('click', options.onRest);
 
   const navigation = header.createDiv({ cls: 'guided-character-sheet__sheet-navigation' });
   navigation.createEl('label', { text: 'Sheet section' });
@@ -169,7 +175,6 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
 
   if (sheet.defenses !== undefined) {
     const defenses = createSection(root, 'Defenses');
-    renderSheetValue(defenses, 'Creature type', sheet.defenses.creatureType, String);
     const resistances = defenses.createDiv({ cls: 'guided-character-sheet__sheet-row' });
     resistances.createSpan({ text: 'Damage resistances', cls: 'guided-character-sheet__sheet-row-label' });
     resistances.createSpan({ text: sheet.defenses.resistances.length === 0 ? 'None' : sheet.defenses.resistances.map((resistance) => resistance.damageType).join(', ') });
@@ -182,8 +187,8 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
   }
 }
 
-function renderInventory(root: HTMLElement, inventory: InventorySheetProjection, warnings: string[], onToggleEquipment?: (entryId: string, equipped: boolean) => void): void {
-  const section = createSection(root, 'Inventory');
+function renderInventory(root: HTMLElement, inventory: InventorySheetProjection, warnings: string[], onToggleEquipment?: (entryId: string, equipped: boolean) => void, onManageCurrency?: () => void, onManageItems?: () => void): void {
+  const section = createSection(root, 'Inventory', { label: 'Manage items', onClick: onManageItems });
   if (inventory.kind === 'missing') {
     renderSheetValue(section, 'Inventory', inventory, () => '');
     renderInventoryWarnings(section, warnings);
@@ -196,7 +201,12 @@ function renderInventory(root: HTMLElement, inventory: InventorySheetProjection,
   renderSheetValue(weight, 'Carried weight', inventory.totalWeight, ({ value, units }) => `${value} ${units}`);
   const currency = summary.createDiv();
   currency.createSpan({ text: 'Currency' });
-  currency.createSpan({ text: formatCurrency(inventory.currency), cls: 'guided-character-sheet__sheet-value' });
+  const currencyControls = currency.createDiv({ cls: 'guided-character-sheet__currency-controls' });
+  currencyControls.createSpan({ text: formatCurrency(inventory.currency), cls: 'guided-character-sheet__sheet-value' });
+  if (onManageCurrency !== undefined) {
+    const manage = currencyControls.createEl('button', { text: 'Manage currency', attr: { type: 'button' } });
+    manage.addEventListener('click', onManageCurrency);
+  }
   const prototype = summary.createDiv({ cls: 'guided-character-sheet__sheet-subtitle' });
   prototype.createSpan({ text: onToggleEquipment === undefined ? 'Read-only prototype' : 'Equipment controls — ' });
   prototype.createSpan({ text: onToggleEquipment === undefined ? ' — Equip and Attune actions are not active yet.' : 'Attune actions are not active yet.' });
@@ -262,7 +272,9 @@ function renderSpells(root: HTMLElement, spells: CharacterSheetProjection['spell
   renderSpellFact(summary, 'Spell attack', spells.spellAttack, formatModifier);
   renderSpellFact(summary, 'Save DC', spells.saveDc, String);
   const prepHeader = spells.preparedCapacity === undefined ? 'Prep' : `Prep ${spells.preparedCount ?? 0}/${spells.preparedCapacity}`;
-  renderSpellRows(section, 'Cantrips', spells.cantrips, onToggleSpellPreparation, prepHeader);
+  const classCantripCount = spells.cantrips.filter((cantrip) => cantrip.ownership.includes('cantrips-known')).length;
+  const cantripCount = spells.cantripCapacity === undefined ? (spells.cantripCapacityBonus ? ` (+${spells.cantripCapacityBonus} capacity)` : '') : ` (${classCantripCount}/${spells.cantripCapacity})`;
+  renderSpellRows(section, `Cantrips${cantripCount}`, spells.cantrips, onToggleSpellPreparation, prepHeader);
   for (const level of spells.levels) {
     const levelSection = createSubsection(section, `${ordinal(level.level)}-level spells`, (heading) => {
       const slots = heading.createDiv({ cls: 'guided-character-sheet__spell-slots' });
@@ -337,6 +349,7 @@ function renderSpellPreparation(root: HTMLElement, spell: SpellSheetRow, onToggl
 }
 
 function spellPreparationApplies(spell: SpellSheetRow): boolean {
+  if (spell.level === 0) return false;
   if (spell.grantPreparation === 'always') return false;
   return spell.source.kind !== 'available' || spell.source.value.preparation !== 'always';
 }
@@ -393,7 +406,7 @@ function renderActions(root: HTMLElement, actions: CharacterSheetProjection['act
       const row = groupRoot.createDiv({ cls: 'guided-character-sheet__action-row' });
       row.createSpan({ text: entry.name, cls: 'guided-character-sheet__sheet-row-label' });
       const recovery = entry.resource?.reset.kind === 'available' ? entry.resource.reset.value : undefined;
-      const context = [entry.source !== entry.name ? entry.source : undefined, entry.activation === undefined ? undefined : humanize(entry.activation), recovery === undefined ? undefined : humanize(recovery.replace(/-/g, ' '))].filter((value): value is string => value !== undefined);
+      const context = [entry.weaponProperties?.join(', '), entry.weaponMastery === undefined ? undefined : `Mastery: ${entry.weaponMastery}`, entry.source !== entry.name ? entry.source : undefined, entry.activation === undefined ? undefined : humanize(entry.activation), recovery === undefined ? undefined : humanize(recovery.replace(/-/g, ' '))].filter((value): value is string => value !== undefined && value.length > 0);
       if (context.length > 0) row.createSpan({ text: context.join(' · '), cls: 'guided-character-sheet__sheet-subtitle' });
       const factKind = entry.factKind ?? (entry.save !== undefined ? 'save' : entry.attackBonus.kind === 'available' ? 'attack' : entry.damage === undefined ? undefined : 'damage');
       if (factKind !== undefined) {
@@ -425,6 +438,14 @@ function renderActions(root: HTMLElement, actions: CharacterSheetProjection['act
   if (actions.combatReference.length > 0) {
     const reference = createSubsection(section, 'Combat actions');
     reference.createDiv({ text: actions.combatReference.join(', '), cls: 'guided-character-sheet__combat-reference' });
+  }
+  if (actions.weaponReferences && actions.weaponReferences.length > 0) {
+    const reference = createSubsection(section, 'Weapon properties and masteries');
+    for (const rule of actions.weaponReferences) {
+      const row = reference.createDiv({ cls: 'guided-character-sheet__action-row' });
+      row.createSpan({ text: rule.name, cls: 'guided-character-sheet__sheet-row-label' });
+      row.createDiv({ text: rule.description ?? 'Source description is unavailable.', cls: 'guided-character-sheet__action-description' });
+    }
   }
   renderWarnings(section, [...actions.warnings, ...warnings]);
 }
@@ -464,7 +485,7 @@ function createSubsection(root: HTMLElement, heading: string, decorateHeading?: 
 function ordinal(value: number): string { return value === 1 ? '1st' : value === 2 ? '2nd' : value === 3 ? '3rd' : `${value}th`; }
 function humanize(value: string): string { const normalized = value.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`).replace(/^./, (letter) => letter.toUpperCase()); return normalized; }
 function formatCurrency(currency: { cp: number; sp: number; ep: number; gp: number; pp: number }): string {
-  const values = (Object.entries(currency) as Array<[keyof typeof currency, number]>).filter(([, amount]) => amount !== 0).map(([denomination, amount]) => `${amount} ${denomination.toUpperCase()}`);
+  const values = CURRENCY_DENOMINATIONS.filter((denomination) => currency[denomination] !== 0).map((denomination) => `${currency[denomination]} ${denomination.toUpperCase()}`);
   return values.length === 0 ? 'No currency' : values.join(', ');
 }
 
@@ -518,16 +539,18 @@ function renderSheetValue<T>(root: HTMLElement, label: string, value: SheetValue
 function identitySummary(sheet: CharacterSheetProjection): string {
   const species = displayValue(sheet.identity.species);
   const size = sheet.identity.size === undefined ? undefined : displayValue(sheet.identity.size);
+  const creatureType = displayValue(sheet.identity.creatureType);
   const className = displayValue(sheet.identity.className);
   const level = sheet.identity.level.kind === 'available' ? `Level ${sheet.identity.level.value}` : 'Level —';
   const background = displayValue(sheet.identity.background);
-  return `${species}${size === undefined ? '' : ` (${size})`} · ${className} ${level} · ${background}`;
+  return `${species}${size === undefined ? '' : ` (${size})`}${creatureType === '—' ? '' : ` · ${creatureType}`} · ${className} ${level} · ${background}`;
 }
 
 function identityAccessibilityLabel(sheet: CharacterSheetProjection): string {
   return `Character details: ${[
     accessibleIdentityValue('Species', sheet.identity.species),
     ...(sheet.identity.size === undefined ? [] : [accessibleIdentityValue('Size', sheet.identity.size)]),
+    accessibleIdentityValue('Creature type', sheet.identity.creatureType),
     accessibleIdentityValue('Class', sheet.identity.className),
     accessibleIdentityValue('Level', sheet.identity.level),
     accessibleIdentityValue('Background', sheet.identity.background),

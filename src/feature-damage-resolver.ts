@@ -45,6 +45,7 @@ export function resolveFeatureDamagePart(part: FoundryDamagePartSummary, context
     const types = specificDamageTypes(part.types);
     return { damage: `${damage}${types.length > 0 ? ` ${types.join(', ')}` : ''}` };
   }
+  if (value.type === 'cr') return { diagnostic: `Cannot resolve custom damage formula ${formula}: challenge rating scales cannot be used as damage.` };
   return { diagnostic: `Cannot resolve custom damage formula ${formula}: distance scales cannot be used as damage.` };
 }
 

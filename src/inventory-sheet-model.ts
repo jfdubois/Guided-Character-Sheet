@@ -51,13 +51,24 @@ interface RowCapabilities {
   stealthDisadvantage?: boolean;
 }
 
-export function projectInventorySheet(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier?: number): InventorySheetProjection {
+// Display labels for the pinned dnd5e weaponTypes codes; the source code stays intact.
+const WEAPON_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  simpleM: 'simple melee',
+  simpleR: 'simple ranged',
+  martialM: 'martial melee',
+  martialR: 'martial ranged',
+  natural: 'natural',
+  improv: 'improvised',
+  siege: 'siege weapon',
+};
+
+export function projectInventorySheet(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier?: number, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk'; secondaryModifier: number }): InventorySheetProjection {
   const mutable = document.mutable;
   if (mutable === undefined) return { kind: 'missing', reason: 'Mutable inventory is not available from character finalization.', warnings: [] };
   const warnings: string[] = [];
   const rows = mutable.inventory.items.map((entry) => projectRow(entry, mutable.equipmentStatus, resolvedItems, warnings));
   rows.sort((left, right) => left.name.localeCompare(right.name) || left.entryId.localeCompare(right.entryId));
-  const armor = projectArmor(document, resolvedItems, dexterityModifier);
+  const armor = projectArmor(document, resolvedItems, dexterityModifier, unarmoredDefense);
   if (armor.armorClass.kind === 'missing' && armor.armorClass.reason !== 'Dexterity modifier is unavailable for armor class projection.') warnings.push(armor.armorClass.reason);
   return {
     kind: 'available',
@@ -69,7 +80,7 @@ export function projectInventorySheet(document: CharacterDocument, resolvedItems
   };
 }
 
-function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier: number | undefined): InventoryArmorEffects {
+function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier: number | undefined, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk'; secondaryModifier: number }): InventoryArmorEffects {
   const mutable = document.mutable;
   if (mutable === undefined) return { armorClass: { kind: 'missing', reason: 'Mutable inventory is not available from character finalization.' }, stealthDisadvantageSources: [] };
   const equippedArmor: Array<{ name: string; capabilities: RowCapabilities }> = [];
@@ -111,6 +122,9 @@ function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInvent
   if (dexterityModifier === undefined) return { armorClass: { kind: 'missing', reason: 'Dexterity modifier is unavailable for armor class projection.' }, stealthDisadvantageSources: sources };
   const shield = equippedShields[0]?.capabilities.armor;
   if (equippedShields.length === 1 && shield === undefined) return { armorClass: { kind: 'missing', reason: 'Equipped shield armor value is unavailable.' }, stealthDisadvantageSources: sources };
+  if (unarmoredDefense !== undefined && equippedArmor.length === 0 && !(unarmoredDefense.calculation === 'unarmoredMonk' && equippedShields.length > 0)) {
+    return { armorClass: { kind: 'available', value: 10 + dexterityModifier + unarmoredDefense.secondaryModifier + (shield?.value ?? 0) }, stealthDisadvantageSources: sources };
+  }
   const dexterity = equippedArmor[0]?.capabilities.category === 'heavy' ? 0 : armor?.dex === undefined ? dexterityModifier : Math.min(dexterityModifier, armor.dex);
   return { armorClass: { kind: 'available', value: (armor?.value ?? 10) + dexterity + (shield?.value ?? 0) }, stealthDisadvantageSources: sources };
 }
@@ -136,7 +150,7 @@ function projectRow(entry: InventoryEntry, statuses: EquipmentStatus[], resolved
   return {
     entryId: entry.entryId,
     name,
-    detail: [capabilities?.type, capabilities?.category].filter((value): value is string => value !== undefined && value.trim().length > 0),
+    detail: [capabilities?.type, capabilities?.type === 'weapon' && capabilities.category !== undefined ? WEAPON_CATEGORY_LABELS[capabilities.category] ?? capabilities.category : capabilities?.category].filter((value): value is string => value !== undefined && value.trim().length > 0),
     quantity: entry.quantity,
     unitWeight: weight.unit,
     stackWeight: weight.stack,

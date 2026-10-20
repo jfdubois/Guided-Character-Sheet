@@ -144,6 +144,33 @@ _id: sword`,
     expect(item).not.toHaveProperty('raw');
   });
 
+  it('includes legacy magic weapons in 2024 item searches alongside 2024 equipment', async () => {
+    const root = 'sources';
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      [`${root}/packs/_source/equipment24/weapons/shortsword.yml`]: `type: weapon\nname: Shortsword\nsystem: { source: { rules: '2024' } }\n_id: current`,
+      [`${root}/packs/_source/items/weapon/shortsword-1.yml`]: `type: weapon\nname: Shortsword +1\nsystem: { source: { rules: '2014' }, rarity: uncommon }\n_id: legacy-magic`,
+    }), root);
+
+    await expect(catalog.searchItems('Shortsword', { ruleset: '2024' })).resolves.toEqual([
+      expect.objectContaining({ name: 'Shortsword', ruleset: '2024', pack: 'dnd5e.equipment24' }),
+      expect.objectContaining({ name: 'Shortsword +1', ruleset: '2014', pack: 'dnd5e.items' }),
+    ]);
+    await expect(catalog.searchItems('Shortsword', { ruleset: '2014' })).resolves.toEqual([
+      expect.objectContaining({ name: 'Shortsword +1', ruleset: '2014' }),
+    ]);
+  });
+
+  it('does not duplicate a legacy item after direct 2024 lookup primes the cache', async () => {
+    const root = 'sources';
+    const sourcePath = 'packs/_source/items/weapon/shortsword-1.yml';
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      [`${root}/${sourcePath}`]: `type: weapon\nname: Shortsword +1\nsystem: { source: { rules: '2014' } }\n_id: legacy-magic`,
+    }), root);
+    await catalog.getItemSummary('2024', sourcePath);
+    const matches = await catalog.searchItems('Shortsword', { ruleset: '2024' });
+    expect(matches.map((item) => item.name)).toEqual(['Shortsword +1']);
+  });
+
   it('searches normalized 2024 spells by level and spell list', async () => {
     const root = 'sources';
     const catalog = createFoundrySourceCatalog(memoryAdapter({

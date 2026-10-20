@@ -4,6 +4,7 @@ import { formatFoundryIdentifier, readFoundryScaleValue } from '../src/foundry-s
 describe('Foundry scale values', () => {
   it('reads supported typed values without coercion', () => {
     expect(readFoundryScaleValue('number', { value: 2 })).toEqual({ type: 'number', value: 2 });
+    expect(readFoundryScaleValue('cr', { value: 0.25 })).toEqual({ type: 'cr', value: 0.25 });
     expect(readFoundryScaleValue('dice', { number: 1, faces: 6, modifiers: [] })).toEqual({ type: 'dice', number: 1, faces: 6, modifiers: [] });
     expect(readFoundryScaleValue('distance', { value: 10 }, 'ft')).toEqual({ type: 'distance', value: 10, units: 'ft' });
   });
@@ -26,6 +27,7 @@ describe('Foundry scale values', () => {
     expect(readFoundryScaleValue('number', { value: '2' })).toBeUndefined();
     expect(readFoundryScaleValue('dice', { number: 1, faces: '6', modifiers: [] })).toBeUndefined();
     expect(readFoundryScaleValue('distance', { value: 10 }, 6)).toBeUndefined();
+    expect(readFoundryScaleValue('cr', { value: -1 })).toBeUndefined();
     expect(readFoundryScaleValue('unknown', { value: 2 })).toBeUndefined();
   });
 });

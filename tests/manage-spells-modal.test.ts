@@ -45,11 +45,21 @@ function allNodes(root: NodeMock): NodeMock[] {
 }
 
 describe('manage spells modal', () => {
+  it('displays managed spells and search results alphabetically', async () => {
+    const index = { searchSpells: vi.fn().mockResolvedValue([spell('zeta', 'Zeta spell', 1), spell('alpha', 'Alpha spell', 1)]) };
+    const { root } = setup(index, [reference('zeta', 'Zeta spell'), reference('alpha', 'Alpha spell')]);
+    await Promise.resolve();
+    const names = (rows: NodeMock[]) => rows.map((row) => row.children[0]!.children[0]!.textContent);
+    expect(names(root.children[1]!.children.slice(1))).toEqual(['Alpha spell', 'Zeta spell']);
+    expect(names(root.children[2]!.children)).toEqual(['Alpha spell', 'Zeta spell']);
+  });
+
   it('passes query, level, and authoritative spell lists to searches', async () => {
     const index = { searchSpells: vi.fn().mockResolvedValue([spell('bolt', 'Arcane Bolt', 1)]) };
     const { root } = setup(index);
     await Promise.resolve();
-    const search = root.children[0]!; const level = root.children[1]!;
+    const controls = root.children[0]!;
+    const search = controls.children[0]!; const level = controls.children[1]!;
     search.value = 'arcane'; search.dispatch('input');
     level.value = '3'; level.dispatch('change');
     await Promise.resolve();
@@ -91,7 +101,7 @@ describe('manage spells modal', () => {
     let resolveFirst!: (value: FoundrySpellSummary[]) => void;
     const index = { searchSpells: vi.fn().mockImplementation(({ query }: { query?: string }) => query === '' ? new Promise<FoundrySpellSummary[]>((resolve) => { resolveFirst = resolve; }) : Promise.resolve([spell('new', 'New spell', 2)])) };
     const { root } = setup(index);
-    const search = root.children[0]!;
+    const search = root.children[0]!.children[0]!;
     search.value = 'new'; search.dispatch('input');
     await Promise.resolve();
     resolveFirst([spell('old', 'Old result', 1)]);

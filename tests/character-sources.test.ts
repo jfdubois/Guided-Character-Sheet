@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { createSourceIndex, createSourceReader, type SourceReaderAdapter, type SpeciesSourceSummary } from '../src/character-sources';
-import { buildSpeciesConfiguration } from '../src/species-configuration';
+import { buildSpeciesConfiguration, restoreSpeciesConfiguration, toSpeciesConfigurationSelection } from '../src/species-configuration';
 import type { SourceStoreAdapter } from '../src/source-store';
 import type { SourceSnapshot } from '../src/source-tree';
 import { isRecord } from '../src/foundry-utils';
 import { buildClassConfiguration, getLevelOneDerivedSpellChoices, setClassSelection, toClassProgressionSelection } from '../src/class-configuration';
 import { createCharacterDocument, withOrigin, withClassProgression, withRuleset } from '../src/character-model';
 import { getLevelOneClassProgression } from '../src/level-one-progression';
+import { createPinnedSourceIndex } from './support/pinned-foundry-source';
 
 function memoryAdapter(files: Record<string, string>): SourceReaderAdapter {
   return {
@@ -35,31 +36,72 @@ function lookupAdapter(files: Record<string, string>): SourceStoreAdapter {
 const lookupSnapshot: SourceSnapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' };
 
 describe('character source reader', () => {
+  it('retains the pinned minimum level when resolving selected feat summaries', async () => {
+    const index = createPinnedSourceIndex();
+    const devilsSight = await index.getFeatSummary({ sourcePath: 'packs/_source/classes24/warlock/eldritch-invocation-options/devils-sight.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'phbinvDevilsSigh', name: "Devil's Sight" }, '2024');
+    const witchSight = await index.getFeatSummary({ sourcePath: 'packs/_source/classes24/warlock/eldritch-invocation-options/witch-sight.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'phbinvWitchSight', name: 'Witch Sight' }, '2024');
+    expect(devilsSight?.minimumLevel).toBe(2);
+    expect(witchSight?.minimumLevel).toBe(15);
+  });
+
+  it('reads 2024 weapon property descriptions from the pinned equipment chapter', async () => {
+    const descriptions = await createPinnedSourceIndex().getWeaponPropertyDescriptions('2024');
+    expect(descriptions.get('fin')).toContain('Strength or Dexterity modifier');
+    expect(descriptions.get('lgt')).toContain('Bonus Action');
+  });
+  it('reads 2014 weapon property descriptions from its own pinned rules chapter', async () => {
+    const descriptions = await createPinnedSourceIndex().getWeaponPropertyDescriptions('2014');
+    expect(descriptions.get('fin')).toContain('Strength or Dexterity modifier');
+    expect(descriptions.get('lgt')).toContain('ideal for use when fighting with two weapons');
+  });
+  it('reads the pinned Appendix D mastery property rules for every weapon mastery', async () => {
+    const index = createPinnedSourceIndex();
+    const descriptions = await index.getWeaponMasteryDescriptions();
+    expect([...descriptions.keys()].sort()).toEqual(['cleave', 'graze', 'nick', 'push', 'sap', 'slow', 'topple', 'vex']);
+    expect(descriptions.get('nick')).toContain('as part of the Attack action instead of as a Bonus Action');
+    expect(descriptions.get('vex')).toContain('Advantage on your next attack roll');
+  });
+
   it('projects level-one species defenses and roll effects from the pinned 2024 records', async () => {
     const root = join(process.cwd(), 'external/foundryvtt/dnd5e');
     const adapter: SourceReaderAdapter = { async exists(path) { try { await fs.access(path); return true; } catch { return false; } }, async list(path) { const entries = await fs.readdir(path, { recursive: true, withFileTypes: true }); return entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath ?? entry.path, entry.name)); }, async read(path) { return fs.readFile(path, 'utf8'); } };
     const index = createSourceIndex(adapter, root);
 
     const gnome = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/gnome-rock.yml');
+    const gnomishCunning = gnome.features?.find((feature) => feature.source.name === 'Gnomish Cunning');
     expect(gnome.creatureTypeProjection).toMatchObject({ value: 'humanoid', source: { name: 'Gnome, Rock' } });
-    expect(gnome.hitPointModifiers).toBeUndefined();
-    expect(gnome.rollAnnotations).toEqual(expect.arrayContaining([
+    expect(gnome.features?.flatMap((feature) => feature.hitPointModifiers ?? [])).toEqual([]);
+    expect(gnomishCunning?.rollAnnotations).toEqual(expect.arrayContaining([
       expect.objectContaining({ target: 'saving-throw', ability: 'int', mode: 'advantage', source: expect.objectContaining({ name: 'Gnomish Cunning' }) }),
       expect.objectContaining({ target: 'saving-throw', ability: 'wis', mode: 'advantage', source: expect.objectContaining({ name: 'Gnomish Cunning' }) }),
       expect.objectContaining({ target: 'saving-throw', ability: 'cha', mode: 'advantage', source: expect.objectContaining({ name: 'Gnomish Cunning' }) }),
     ]));
 
     const dwarf = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/dwarf.yml');
-    expect(dwarf.hitPointModifiers).toEqual([{ perLevel: 1, source: expect.objectContaining({ name: 'Dwarven Toughness' }) }]);
+    expect(dwarf.features?.find((feature) => feature.source.name === 'Dwarven Toughness')?.hitPointModifiers).toEqual([{ perLevel: 1, source: expect.objectContaining({ name: 'Dwarven Toughness' }) }]);
     expect(dwarf.resistances).toEqual(expect.arrayContaining([
       expect.objectContaining({ damageType: 'poison', selected: true, source: expect.objectContaining({ name: 'Dwarven Resilience' }) }),
     ]));
-    expect(dwarf.savingThrowNotes).toEqual([{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: expect.objectContaining({ name: 'Dwarven Resilience' }) }]);
-    expect(dwarf.rollAnnotations ?? []).toHaveLength(0);
+    expect(dwarf.features?.find((feature) => feature.source.name === 'Dwarven Resilience')?.savingThrowNotes).toEqual([{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: expect.objectContaining({ name: 'Dwarven Resilience' }) }]);
+    expect(dwarf.features?.flatMap((feature) => feature.rollAnnotations ?? [])).toHaveLength(0);
 
     const halfling = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/halfling.yml');
     expect(halfling.features?.some((feature) => feature.source.name === 'Luck')).toBe(true);
-    expect(halfling.rollAnnotations ?? []).toHaveLength(0);
+    expect(halfling.features?.flatMap((feature) => feature.rollAnnotations ?? [])).toHaveLength(0);
+
+    const goliath = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/goliath.yml');
+    const powerfulBuild = goliath.features?.find((feature) => feature.source.name === 'Powerful Build');
+    const frostsChill = goliath.features?.find((feature) => feature.source.name === "Frost's Chill");
+    const largeForm = goliath.features?.find((feature) => feature.source.name === 'Large Form');
+    expect(powerfulBuild?.effectDiagnostics).toBeUndefined();
+    expect(frostsChill?.effectDiagnostics).toBeUndefined();
+    expect(largeForm).toMatchObject({ level: 5, automatic: true });
+    expect(largeForm?.effectDiagnostics).toBeUndefined();
+    const levelOneConfiguration = buildSpeciesConfiguration(goliath, lookupSnapshot);
+    expect(levelOneConfiguration.grants.map((grant) => grant.label)).not.toContain('Large Form');
+    const savedWithFutureGrant = toSpeciesConfigurationSelection(buildSpeciesConfiguration(goliath, lookupSnapshot, 5));
+    const restoredLevelOne = restoreSpeciesConfiguration(savedWithFutureGrant, { origin: levelOneConfiguration.origin, summary: goliath, grants: levelOneConfiguration.grants, choices: levelOneConfiguration.choices, spellChoices: levelOneConfiguration.spellChoices });
+    expect(restoredLevelOne.grants.map((grant) => grant.label)).not.toContain('Large Form');
   });
 
   it('preserves disadvantage and diagnoses unsupported stable species effect changes', async () => {
@@ -90,11 +132,47 @@ _id: test-effect`,
 
     const summary = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/test.yml');
 
-    expect(summary.rollAnnotations).toEqual([
+    const feature = summary.features?.find((candidate) => candidate.source.name === 'Test Effect');
+    expect(feature?.rollAnnotations).toEqual([
       expect.objectContaining({ target: 'saving-throw', ability: 'int', mode: 'disadvantage', source: expect.objectContaining({ name: 'Test Effect' }) }),
     ]);
-    expect(summary.effectDiagnostics).toEqual([
+    expect(feature?.effectDiagnostics).toEqual([
       'Unsupported stable effect change from Test Effect: system.attributes.ac.bonus.',
+    ]);
+  });
+
+  it('preserves every entitlement when the same feature is reachable from multiple advancements', async () => {
+    const root = 'sources';
+    const sharedUuid = 'Compendium.dnd5e.origins24.Item.shared-feature';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/origins24/species/test.yml`]: `type: race
+name: Test Species
+system:
+  source: { rules: 2024 }
+  identifier: test-species
+  advancement:
+    - _id: future
+      type: ItemGrant
+      level: 5
+      configuration: { uuid: ${sharedUuid} }
+    - _id: choice
+      type: ItemChoice
+      level: 1
+      configuration: { choices: 1, pool: [${sharedUuid}] }
+_id: test-species`,
+      [`${root}/packs/_source/origins24/species/traits/shared.yml`]: `type: feat
+name: Shared Feature
+system: { description: { value: Shared. } }
+_id: shared-feature`,
+    }), root);
+
+    const summary = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/test.yml');
+    const feature = summary.features?.find((candidate) => candidate.source.name === 'Shared Feature');
+
+    expect(feature).toMatchObject({ level: 1, automatic: false, advancementId: 'choice' });
+    expect(feature?.entitlements).toEqual([
+      expect.objectContaining({ level: 5, automatic: true, advancementId: 'future' }),
+      expect.objectContaining({ level: 1, automatic: false, advancementId: 'choice', selection: { key: 'species:choice', value: sharedUuid } }),
     ]);
   });
 
@@ -105,8 +183,9 @@ _id: test-effect`,
       [`${root}/packs/_source/origins24/species/traits/test-effect.yml`]: `type: feat\nname: Dwarven Toughness\nsystem:\n  identifier: dwarven-toughness\n  description: { value: "Your Hit Point maximum increases by 1." }\neffects:\n  - disabled: false\n    system:\n      changes:\n        - { key: system.attributes.hp.bonuses.level, value: "1", type: add }\n_id: test-effect`,
     }), root);
     const summary = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/test.yml');
-    expect(summary.hitPointModifiers).toBeUndefined();
-    expect(summary.effectDiagnostics).toContain('Malformed supported HP effect from Dwarven Toughness: system.attributes.hp.bonuses.level.');
+    const feature = summary.features?.find((candidate) => candidate.source.name === 'Dwarven Toughness');
+    expect(feature?.hitPointModifiers).toBeUndefined();
+    expect(feature?.effectDiagnostics).toContain('Malformed supported HP effect from Dwarven Toughness: system.attributes.hp.bonuses.level.');
   });
 
   it('projects the pinned Dragonborn species scale with its level-zero value and later thresholds', async () => {
@@ -141,6 +220,76 @@ _id: test-effect`,
     const soldier = await index.getBackgroundSummary('2024', 'packs/_source/origins24/backgrounds/soldier.yml');
     expect(criminal.grantedFeat).toMatchObject({ source: { name: 'Alert' }, advancements: [] });
     expect(soldier.grantedFeat).toMatchObject({ source: { name: 'Savage Attacker' }, advancements: [] });
+  });
+
+  it('projects every pinned 2024 background feat with its source description and effect changes', async () => {
+    const root = join(process.cwd(), 'external/foundryvtt/dnd5e');
+    const adapter: SourceReaderAdapter = { async exists(path) { try { await fs.access(path); return true; } catch { return false; } }, async list(path) { const entries = await fs.readdir(path, { recursive: true, withFileTypes: true }); return entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath ?? entry.path, entry.name)); }, async read(path) { return fs.readFile(path, 'utf8'); } };
+    const index = createSourceIndex(adapter, root);
+    const backgrounds = await Promise.all(['acolyte', 'criminal', 'sage', 'soldier'].map((name) => index.getBackgroundSummary('2024', `packs/_source/origins24/backgrounds/${name}.yml`)));
+    const feats = backgrounds.map((background) => background.grantedFeats?.[0]);
+    expect(feats.map((feat) => feat?.source.name)).toEqual(['Magic Initiate', 'Alert', 'Magic Initiate', 'Savage Attacker']);
+    expect(feats.every((feat) => typeof feat?.description === 'string' && feat.description.length > 0)).toBe(true);
+    expect(feats[1]?.activeEffects).toEqual(expect.arrayContaining([expect.objectContaining({ system: { changes: expect.arrayContaining([expect.objectContaining({ key: 'flags.dnd5e.initiativeAlert', value: true })]) } })]));
+    expect(backgrounds[0]?.grantedFeat).toEqual(backgrounds[0]?.grantedFeats?.[0]);
+  });
+
+  it('projects multiple background feat grants without truncating them', async () => {
+    const root = 'sources';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/origins24/backgrounds/multiple.yml`]: `type: background\nname: Multiple\nsystem:\n  source: { rules: 2024 }\n  advancement:\n    - _id: grant-one\n      type: ItemGrant\n      configuration: { items: [{ uuid: Compendium.dnd5e.feats24.Item.first }] }\n    - _id: grant-two\n      type: ItemGrant\n      configuration: { items: [{ uuid: Compendium.dnd5e.feats24.Item.second }] }\n_id: multiple`,
+      [`${root}/packs/_source/feats24/first.yml`]: `type: feat\nname: First Feat\nsystem: { description: { value: First description. } }\n_id: first`,
+      [`${root}/packs/_source/feats24/second.yml`]: `type: feat\nname: Second Feat\nsystem: { description: { value: Second description. } }\n_id: second`,
+    }), root);
+    const summary = await index.getBackgroundSummary('2024', 'packs/_source/origins24/backgrounds/multiple.yml');
+    expect((summary.grantedFeats ?? []).map((feat) => [feat.source.name, feat.description])).toEqual([['First Feat', 'First description.'], ['Second Feat', 'Second description.']]);
+    expect(summary.grantedFeat?.source.name).toBe('First Feat');
+  });
+
+  it('preserves the owning ItemGrant advancement when one feat is granted twice', async () => {
+    const root = 'sources';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/origins24/backgrounds/repeated.yml`]: `type: background\nname: Repeated\nsystem:\n  source: { rules: 2024 }\n  advancement:\n    - _id: first-grant\n      type: ItemGrant\n      configuration: { items: [{ uuid: Compendium.dnd5e.feats24.Item.shared }] }\n    - _id: second-grant\n      type: ItemGrant\n      configuration: { items: [{ uuid: Compendium.dnd5e.feats24.Item.shared }] }\n_id: repeated`,
+      [`${root}/packs/_source/feats24/shared.yml`]: `type: feat\nname: Shared Feat\nsystem: { description: { value: Shared description. } }\n_id: shared`,
+    }), root);
+    const summary = await index.getBackgroundSummary('2024', 'packs/_source/origins24/backgrounds/repeated.yml');
+    expect(summary.grantedFeats?.map((feat) => [feat.source.id, feat.advancementId])).toEqual([
+      ['shared', 'first-grant'],
+      ['shared', 'second-grant'],
+    ]);
+  });
+
+  it('resolves selected class or species feat references from authoritative source records', async () => {
+    const root = 'sources';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/feats24/selected.yml`]: `type: feat\nname: Selected Feat\nsystem:\n  source: { rules: 2024 }\n  description: { value: Authoritative feat description. }\n  advancement: []\n_id: selected`,
+    }), root);
+    const selected = await index.getFeatSummary({ sourcePath: 'packs/_source/feats24/selected.yml', pack: 'dnd5e.feats24', type: 'feat', id: 'selected', name: 'Selected Feat' }, '2024');
+    expect(selected).toMatchObject({ source: { id: 'selected', name: 'Selected Feat' }, description: 'Authoritative feat description.', advancements: [] });
+  });
+
+  it('keeps unresolved selected feat references unavailable instead of inventing a record', async () => {
+    const index = createSourceIndex(memoryAdapter({}), 'sources');
+    const selected = await index.getFeatSummary({ sourcePath: 'packs/_source/feats24/missing.yml', pack: 'dnd5e.feats24', type: 'feat', id: 'missing', name: 'Saved Feat Name' }, '2024');
+    expect(selected).toBeNull();
+  });
+
+  it('rejects a selected feat reference whose pack disagrees with its source path', async () => {
+    const root = 'sources';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/feats24/selected.yml`]: `type: feat\nname: Selected Feat\nsystem: { source: { rules: 2024 }, advancement: [] }\n_id: selected`,
+    }), root);
+    const selected = await index.getFeatSummary({ sourcePath: 'packs/_source/feats24/selected.yml', pack: 'dnd5e.other', type: 'feat', id: 'selected', name: 'Selected Feat' }, '2024');
+    expect(selected).toBeNull();
+  });
+
+  it('uses the current source name when a saved feat reference has a stale name', async () => {
+    const root = 'sources';
+    const index = createSourceIndex(memoryAdapter({
+      [`${root}/packs/_source/feats24/selected.yml`]: `type: feat\nname: Current Feat Name\nsystem: { source: { rules: 2024 }, advancement: [] }\n_id: selected`,
+    }), root);
+    const selected = await index.getFeatSummary({ sourcePath: 'packs/_source/feats24/selected.yml', pack: 'dnd5e.feats24', type: 'feat', id: 'selected', name: 'Old Saved Name' }, '2024');
+    expect(selected?.source.name).toBe('Current Feat Name');
   });
 
   it('retains malformed required background feat advancements as raw unresolved entries', async () => {

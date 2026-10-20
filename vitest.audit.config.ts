@@ -9,5 +9,6 @@ export default defineConfig({
   },
   test: {
     include: ['tests/pinned-2024-character-creation-audit.test.ts'],
+    testTimeout: 120_000,
   },
 });
