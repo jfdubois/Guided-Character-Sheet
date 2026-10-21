@@ -1,5 +1,6 @@
 import { ItemView, TFile, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
-import { withAbilityScores, withPointBuyDraft, withRolledAbilityDraft, withStandardArrayDraft, withBackground, withBackgroundAbilityScores, withBackgroundEquipment, withBackgroundGrantedFeat, withBackgroundLanguages, withClassEquipment, withClassProgression, withInventory, withMutableState, withName, withOrigin, withRuleset, withSpeciesConfiguration, type CharacterDocument, type CharacterRuleset } from './character-model';
+import { parseCharacterDocument, withAbilityScores, withPointBuyDraft, withRolledAbilityDraft, withStandardArrayDraft, withBackground, withBackgroundAbilityScores, withBackgroundEquipment, withBackgroundGrantedFeat, withBackgroundLanguages, withClassEquipment, withClassProgression, withInventory, withMutableState, withName, withOrigin, withRuleset, withSpeciesConfiguration, type CharacterDocument, type CharacterRuleset } from './character-model';
+import { calculateClassHitPoints, setClassHitPointGain, validateClassHitPoints, type ClassHitPointEntry } from './class-hit-points';
 import type { CharacterStore } from './character-store';
 import type { BackgroundSourceSummary, CharacterSourceOption, ClassAdvancementSummary, ClassSourceSummary, FoundrySourceReference, SourceIndex, SourceReader, SpeciesFeatureSummary, SpeciesSourceSummary } from './character-sources';
 import { languageSelectorKey, languageSelectorLabel, languageSelectorOptions, type FoundryItemSummary, type FoundryLanguageOption, type FoundrySpellSummary, type SpellSearchFilters } from './foundry-source-catalog';
@@ -10,7 +11,8 @@ import { applyInventoryItemChanges, emptyInventory, expandInventoryContainers, f
 import { getEquipmentChoiceLabel, getEquipmentOptionContents, resolveStartingEquipmentItems, type EquipmentPackageNode, type EquipmentPackageSummary } from './equipment';
 import { ABILITIES, calculateAbilityScores, canAffordPointBuyScore, collectAbilityBonuses, createDefaultAbilityScores, createPointBuyAbilityScores, createRolledAbilityDraft, createStandardArrayDraft, getAbilityScoreMethodOptions, isValidRolledBase, moveStandardArrayValue, pointBuyRemaining, sumAbilityBonuses, validateAbilityScores, type Ability, type AbilityScoreMethod, type AbilityScoreSelection, type PointBuyDraft, type RolledAbilityDraft, type StandardArrayDraft } from './ability-scores';
 import { isSpellChoiceAvailable, setSpellChoice, setSpellcastingAbility, type SpellChoice, type SpellChoiceOption, type SpellChoiceSelection } from './spell-configuration';
-import { getLevelOneClassProgression, type LevelOneClassProgression } from './level-one-progression';
+import { getLevelOneClassProgression } from './level-one-progression';
+import { projectClassLevelPreviewDocument, projectClassLevelProgression, trimClassProgression } from './class-level-progression';
 import { adjustHitPoints, adjustMutableResourceCurrent, createFinalizedMutableCharacterState, type CharacterResource, type CharacterSpellUse } from './mutable-character-state';
 import { HitPointAdjustmentModal } from './hit-point-adjustment-modal';
 import { CurrencyModal } from './currency-modal';
@@ -33,83 +35,20 @@ import { isFoundrySourceReference } from './foundry-source-reference';
 import type { SourceSnapshot } from './source-tree';
 import { collectExpertiseProficiencies, filterExpertiseCandidates, getExpertisePool, matchesAnySelector, validateExpertiseSelections } from './expertise-eligibility';
 import { getEligibleSpeciesFeatures } from './species-feature-eligibility';
+import { draconicSorceryHitPointsPerLevel } from './passive-effects';
 import { getEligibleClassFeatures, getEligibleClassScales } from './class-feature-eligibility';
 import { getEligibleClassProficiencies } from './class-proficiency-eligibility';
 import { proficiencyBonusForLevel } from './proficiency-bonus';
 import { renderFoundryOverview } from './foundry-overview-renderer';
 import { isWeaponTrained, validateWeaponMasterySelections } from './weapon-training';
 import { resolveFeatureScaleLookup } from './feature-damage-resolver';
+import { buildClassLevelCards, getFirstIncompleteClassLevel, renderClassLevelCards } from './class-level-cards';
+import { CharacterResetModal } from './character-reset-modal';
+import { applyCharacterLevelDraft } from './character-level-change';
 
 export const CHARACTER_VIEW_TYPE = 'guided-character-sheet';
 type RestCompatibilityContext = LevelOne2024RestSource & { selectionSignature: string };
 export function createAbilityScoreUpdate(selection: AbilityScoreSelection): (document: CharacterDocument) => CharacterDocument { const snapshot = structuredClone(selection); return (document) => withAbilityScores(document, snapshot); }
-
-export interface LevelOneProgressionSummary {
-  proficiencyBonus: number;
-  spellcastingAbility?: string;
-  cantripsKnown?: number;
-  learnedSpells?: number;
-  spellbookSpells?: number;
-  preparedCapacity?: number;
-  spellSlots: NonNullable<NonNullable<LevelOneClassProgression['spellcasting']>['spellSlots']>;
-  diagnostics: string[];
-}
-
-function levelOneSpellSlots(summary: ClassSourceSummary, progression: LevelOneClassProgression): NonNullable<NonNullable<LevelOneClassProgression['spellcasting']>['spellSlots']> {
-  void summary;
-  return progression.spellcasting?.spellSlots ?? [];
-}
-
-export function getLevelOneProgressionSummary(summary: ClassSourceSummary, configuration: ClassConfiguration): LevelOneProgressionSummary {
-  void configuration;
-  const progression = getLevelOneClassProgression(summary);
-  const spellcasting = progression.spellcasting;
-  return {
-    proficiencyBonus: progression.proficiencyBonus,
-    ...(spellcasting?.spellcastingAbility === undefined ? {} : { spellcastingAbility: spellcasting.spellcastingAbility }),
-    ...(spellcasting?.cantripsKnown === undefined ? {} : { cantripsKnown: spellcasting.cantripsKnown }),
-    ...(spellcasting?.learnedSpells === undefined ? {} : { learnedSpells: spellcasting.learnedSpells }),
-    ...(spellcasting?.spellbookSpells === undefined ? {} : { spellbookSpells: spellcasting.spellbookSpells }),
-    ...(spellcasting?.preparedSpells === undefined ? {} : { preparedCapacity: spellcasting.preparedSpells }),
-    spellSlots: levelOneSpellSlots(summary, progression),
-    diagnostics: [...(spellcasting?.diagnostics ?? []), ...(spellcasting === undefined || spellcasting.spellSlots !== undefined ? [] : ['Level-one spell-slot data is unavailable from the class source.'])],
-  };
-}
-
-export function renderLevelOneProgressionSummary(root: HTMLElement, summary: LevelOneProgressionSummary, document: CharacterDocument, configuration?: ClassConfiguration): void {
-  const facts = root.createDiv({ cls: 'guided-character-sheet__derived-summary' });
-  facts.createEl('h4', { text: 'Level-one facts' });
-  const list = facts.createEl('ul');
-  if (summary.spellcastingAbility) list.createEl('li', { text: summary.spellcastingAbility });
-  list.createEl('li', { text: `Proficiency bonus: +${summary.proficiencyBonus}` });
-  if (summary.cantripsKnown !== undefined) list.createEl('li', { text: `Cantrips known: ${summary.cantripsKnown}` });
-  if (summary.learnedSpells !== undefined) list.createEl('li', { text: `Known spells: ${summary.learnedSpells}` });
-  if (summary.spellbookSpells !== undefined) list.createEl('li', { text: `Spellbook: ${summary.spellbookSpells}` });
-  if (summary.preparedCapacity !== undefined) list.createEl('li', { text: `Prepared capacity: ${summary.preparedCapacity}` });
-  for (const slot of summary.spellSlots) list.createEl('li', { text: `${slot.level === 1 ? '1st' : `${slot.level}th`}-level spell slots: ${slot.maximum}` });
-  for (const diagnostic of summary.diagnostics) facts.createDiv({ text: diagnostic, cls: 'guided-character-sheet__warning' });
-
-  const mutable = document.mutable;
-  if (mutable === undefined) return;
-  const state = facts.createDiv({ cls: 'guided-character-sheet__mutable-summary' });
-  state.createEl('h4', { text: 'Current character state' });
-  renderMutableList(state, 'Inventory and equipment', mutable.inventory.items.map((item) => `${isFoundryInventoryEntry(item) ? item.source.name : item.custom.name} ×${item.quantity}`));
-  // Creation selections own cantrips, known spells, and spellbook contents; mutable state owns prepared assignments.
-  const cantrips = (configuration?.selections ?? []).filter((choice): choice is Extract<ClassAdvancementSelection, { kind: 'spell' }> => choice.kind === 'spell' && choice.selectionRole === 'cantrips-known').flatMap((choice) => choice.selected.map((spell) => spell.name));
-  const knownSpells = (configuration?.selections ?? []).filter((choice): choice is Extract<ClassAdvancementSelection, { kind: 'spell' }> => choice.kind === 'spell' && (choice.selectionRole === 'known-spells' || choice.selectionRole === 'spellbook')).flatMap((choice) => choice.selected.map((spell) => spell.name));
-  renderMutableList(state, 'Cantrips', cantrips);
-  renderMutableList(state, 'Known spells', knownSpells);
-  renderMutableList(state, 'Prepared spells', mutable.preparedSpells.map((spell) => spell.name));
-  renderMutableList(state, 'Equipment status', mutable.equipmentStatus.map((status) => `${status.entryId}: ${status.equipped ? 'equipped' : 'not equipped'}, ${status.attuned ? 'attuned' : 'not attuned'}`));
-  renderMutableList(state, 'Resources', mutable.resources.map((resource) => `${resource.key}: ${resource.current}/${resource.maximum}`));
-}
-
-function renderMutableList(root: HTMLElement, heading: string, values: string[]): void {
-  root.createEl('h5', { text: heading });
-  const list = root.createEl('ul');
-  if (values.length === 0) list.createEl('li', { text: 'None' });
-  else for (const value of values) list.createEl('li', { text: value });
-}
 
 export type CharacterViewMode = 'create' | 'open';
 export type CharacterViewState = { mode: 'create'; filePath: string } | { mode: 'open'; filePath?: string; section: CharacterSheetSection };
@@ -130,11 +69,11 @@ export interface SpeciesConfigurationRenderInput { choices?: SpeciesChoiceRender
 export type ClassRenderState = { kind: 'class'; options: CharacterSourceOption[]; diagnostic?: string } | { kind: 'class-unavailable'; message: string } | { kind: 'class-summary'; name: string; sourcePath: string; hitDie: string; targetLevel: number; automatic: ClassAdvancementSummary[]; pending: ClassAdvancementSummary[]; dependencies: SpeciesRenderDependency[]; diagnostics: string[]; choices: ClassAdvancementSelection[]; proficiencies?: ClassSourceSummary['proficiencies']; features?: ClassSourceSummary['features']; scales?: ClassSourceSummary['scales']; startingEquipment?: EquipmentPackageSummary };
 export interface ClassFeatureRenderCallout { name: string; level: number; description?: string; }
 interface ClassChoiceDisplayOption { id: string; name: string; sourcePath: string; description?: string; source?: FoundrySourceReference; sourceSelector?: string; }
-export type SpellCatalogQuery = (filters: { level?: number; spellLists?: string[]; query?: string }) => Promise<SpellChoiceOption[]>;
+export type SpellCatalogQuery = (filters: { level?: number; maxLevel?: number; spellLists?: string[]; query?: string }) => Promise<SpellChoiceOption[]>;
 interface SpellChoiceRenderOptions { showLabel?: boolean; showAbility?: boolean; }
 
-export function getSpellChoiceQueryFilters(choice: SpellChoice): { level?: number; spellLists?: string[] } {
-  return { ...(choice.level < 0 ? {} : { level: choice.level }), ...(choice.spellLists.length === 0 ? {} : { spellLists: [...choice.spellLists] }) };
+export function getSpellChoiceQueryFilters(choice: SpellChoice): { level?: number; maxLevel?: number; spellLists?: string[] } {
+  return { ...(choice.level < 0 ? {} : { level: choice.level }), ...(choice.maxLevel === undefined ? {} : { maxLevel: choice.maxLevel }), ...(choice.spellLists.length === 0 ? {} : { spellLists: [...choice.spellLists] }) };
 }
 
 export function mergeSpellSelections(selected: SpellChoiceSelection[], visibleOptions: SpellChoiceOption[], visibleValues: SpellChoiceSelection[]): SpellChoiceSelection[] {
@@ -467,6 +406,7 @@ function toViewSpellChoice(configuration: ClassConfiguration, choice: Extract<Cl
     label: getClassChoiceLabel(configuration, choice),
     count: choice.count ?? classChoiceCount(configuration, choice),
     level: choice.level ?? -1,
+    ...(choice.maxLevel === undefined ? {} : { maxLevel: choice.maxLevel }),
     spellLists: [...(choice.spellLists ?? [])],
     selected: choice.selected.map((source) => ({ ...source })),
     abilityOptions: [...(choice.abilityOptions ?? [])],
@@ -480,7 +420,7 @@ function spellOptionMatchesChoice(option: SpellChoiceOption, choice: SpellChoice
   const source = option.source;
   const level = isSpellSummarySource(source) && typeof source.level === 'number' ? source.level : undefined;
   const lists = isSpellSummarySource(source) && Array.isArray(source.spellLists) ? source.spellLists : [];
-  return (level === undefined || choice.level < 0 || level === choice.level) && (choice.spellLists.length === 0 || lists.length === 0 || lists.some((list) => choice.spellLists.includes(list)));
+  return (level === undefined || choice.level < 0 || level === choice.level) && (level === undefined || choice.maxLevel === undefined || level <= choice.maxLevel) && (choice.spellLists.length === 0 || lists.length === 0 || lists.some((list) => choice.spellLists.includes(list)));
 }
 
 function isSpellSummarySource(source: FoundrySourceReference): source is FoundrySourceReference & { level?: unknown; spellLists?: string[] } {
@@ -529,7 +469,7 @@ export function getClassChoiceLabel(configuration: ClassConfiguration, choice: C
   const advancement = configuration.advancements.find((entry) => entry.id === choice.advancementId);
   const title = advancement?.title.trim();
   const category = choice.kind === 'trait' || choice.kind === 'expertise' ? selectorCategoryLabel(choice.configuredPool ?? []) : undefined;
-  const label = title || category || 'Class choice';
+  const label = title || category || (choice.kind === 'subclass' ? 'Subclass' : 'Class choice');
   const count = classChoiceCount(configuration, choice);
   return count > 1 ? `${label} — choose ${count}` : label;
 }
@@ -572,6 +512,31 @@ export function getCharacterRenderState(document: CharacterDocument, options?: C
   if (document.ruleset === null) return { kind: 'ruleset', options: ['2014', '2024'] };
   if (options === undefined) return { kind: 'unavailable', message: 'Source choices are unavailable. Download the Foundry sources first.' };
   return { kind: 'origin', label: document.ruleset === '2014' ? 'Race' : 'Species', options };
+}
+
+export function shouldConfirmRulesetReset(document: CharacterDocument): boolean {
+  return document.ruleset !== null && (
+    document.origin !== undefined || (document.classProgressions?.length ?? 0) > 0 || document.background !== undefined
+    || document.speciesConfiguration !== undefined || document.backgroundChoices !== undefined || document.abilityScores !== undefined
+    || document.abilityScoreDraft !== undefined || document.inventory !== undefined || document.classEquipment !== undefined
+    || document.backgroundEquipment !== undefined || document.mutable !== undefined
+  );
+}
+
+export function updateClassLevelDraft(
+  document: CharacterDocument,
+  summary: ClassSourceSummary,
+  targetLevel: number,
+  comparisonHitPoints: readonly ClassHitPointEntry[] = document.classHitPoints ?? [],
+): { document: CharacterDocument; comparisonHitPoints: ClassHitPointEntry[] } {
+  const progression = document.classProgressions?.[0];
+  if (progression === undefined || progression.class.sourcePath !== summary.source.sourcePath) throw new Error('Class source is unavailable for this level draft.');
+  const nextProgression = trimClassProgression(progression, summary, targetLevel);
+  const candidateHitPoints = comparisonHitPoints.filter((entry) => entry.classSourcePath === summary.source.sourcePath && entry.level <= targetLevel).map((entry) => ({ ...entry }));
+  const nextDocument: CharacterDocument = { ...document, classProgressions: [nextProgression] };
+  if (validateClassHitPoints(candidateHitPoints, summary.source.sourcePath, summary.hitDie, targetLevel).length === 0) nextDocument.classHitPoints = candidateHitPoints;
+  else delete nextDocument.classHitPoints;
+  return { document: parseCharacterDocument(nextDocument), comparisonHitPoints: comparisonHitPoints.map((entry) => ({ ...entry })) };
 }
 
 export function getSelectedOriginId(document: CharacterDocument): string {
@@ -768,6 +733,11 @@ export class CharacterView extends ItemView {
   private readonly sourceReader: SourceReader;
   private file: TFile | null = null;
   private document: CharacterDocument | null = null;
+  private savedDocument: CharacterDocument | undefined;
+  private completedEditMode = false;
+  private inactiveClassHitPoints: ClassHitPointEntry[] = [];
+  private draftClassHitPoints: ClassHitPointEntry[] = [];
+  private draftApplyError: string | undefined;
   private pendingTimer: number | undefined;
   private pendingUpdate: ((document: CharacterDocument) => CharacterDocument) | undefined;
   private flushInProgress: Promise<void> | undefined;
@@ -779,6 +749,7 @@ export class CharacterView extends ItemView {
   private opened = false;
   private eventsRegistered = false;
   private activeSection: CharacterCreationSectionId | undefined;
+  private classLevelPreview: { sourcePath: string; level: number } | undefined;
 
   constructor(leaf: WorkspaceLeaf, store: CharacterStore, sourceReader: SourceReader, sourceIndex: SourceIndex) {
     super(leaf);
@@ -819,10 +790,26 @@ export class CharacterView extends ItemView {
     const state = this.viewState;
     if (state === null || state.mode === 'open' && state.filePath === undefined) { this.file = null; this.document = null; await this.renderCharacterPicker(); return; }
     if (state.filePath === undefined) { this.renderUnavailable('This character view has no valid character file.'); return; }
+    if (state.mode === 'open') { this.completedEditMode = false; this.savedDocument = undefined; this.inactiveClassHitPoints = []; this.draftClassHitPoints = []; this.draftApplyError = undefined; this.conflict = false; }
     const file = this.app.vault.getFileByPath(state.filePath);
     if (!(file instanceof TFile)) { this.renderUnavailable('The character file could not be found.'); return; }
+    if (this.file?.path !== file.path) this.classLevelPreview = undefined;
     this.file = file;
-    try { this.document = await this.store.read(file); await this.render(); } catch (error) { this.renderUnavailable(error instanceof Error ? error.message : String(error)); }
+    try {
+      const loaded = await this.store.read(file);
+      if ((this.completedEditMode || state.mode === 'create') && loaded.mutable !== undefined) {
+        this.completedEditMode = true;
+        this.savedDocument = structuredClone(loaded);
+        const savedHitPoints = loaded.classHitPoints ?? (loaded.classProgressions?.[0] === undefined ? [] : [{ classSourcePath: loaded.classProgressions[0].class.sourcePath, level: 1, value: 'max' as const }]);
+        this.inactiveClassHitPoints = structuredClone(loaded.classHitPoints ?? []);
+        this.draftClassHitPoints = structuredClone(savedHitPoints);
+        this.document = structuredClone(loaded);
+      } else {
+        this.document = loaded;
+        if (!this.completedEditMode) this.savedDocument = undefined;
+      }
+      await this.render();
+    } catch (error) { this.renderUnavailable(error instanceof Error ? error.message : String(error)); }
   }
 
   private async render(): Promise<void> {
@@ -831,6 +818,7 @@ export class CharacterView extends ItemView {
     const root = this.contentEl.createDiv({ cls: 'guided-character-sheet' });
     if (this.viewState?.mode === 'open') { await this.renderOpenCharacterSheet(root); return; }
     root.createEl('h2', { text: this.document.name, cls: 'guided-character-sheet__name' });
+    if (this.completedEditMode) this.renderEditDraftActions(root);
     root.createDiv({ text: 'Build your character one choice at a time.', cls: 'guided-character-sheet__step' });
     await this.renderCreationJourney(root);
   }
@@ -1112,7 +1100,9 @@ export class CharacterView extends ItemView {
     const loadInventory = async (): Promise<void> => {
       if (document.mutable === undefined) return;
       const inventoryItems = new Map<string, InventoryProjectionValue<FoundryItemSummary>>();
+      const inventoryWarnings: string[] = [];
       sources.inventoryItems = inventoryItems;
+      sources.inventoryWarnings = inventoryWarnings;
       await Promise.all(document.mutable.inventory.items.map(async (entry) => {
         if (!isFoundryInventoryEntry(entry)) return;
         const warning = `Inventory source unavailable for ${entry.source.name}.`;
@@ -1120,13 +1110,13 @@ export class CharacterView extends ItemView {
           const summary = await this.sourceIndex.getItemSummary(ruleset, entry.source.sourcePath);
           if (summary === null) {
             inventoryItems.set(entry.entryId, { kind: 'missing', reason: warning });
-            sources.warnings.push(warning);
+            inventoryWarnings.push(warning);
             return;
           }
           inventoryItems.set(entry.entryId, { kind: 'available', value: summary });
         } catch {
           inventoryItems.set(entry.entryId, { kind: 'missing', reason: warning });
-          sources.warnings.push(warning);
+          inventoryWarnings.push(warning);
         }
       }));
     };
@@ -1231,6 +1221,56 @@ export class CharacterView extends ItemView {
     this.renderJourneyNavigation(panel, sections, current);
   }
 
+  private renderEditDraftActions(root: HTMLElement): void {
+    const actions = root.createDiv({ cls: 'guided-character-sheet__edit-actions' });
+    const apply = actions.createEl('button', { text: 'Apply', cls: 'mod-cta', attr: { type: 'button' } });
+    apply.disabled = this.conflict || this.document?.classProgressions?.length !== 1;
+    apply.setAttribute('aria-label', 'Apply character changes');
+    if (this.draftApplyError !== undefined) actions.createDiv({ text: this.draftApplyError, cls: 'guided-character-sheet__warning', attr: { role: 'alert' } });
+    actions.createDiv({ text: this.conflict ? 'This character changed externally. Cancel and reopen it before editing.' : 'Apply validates the selected level, choices, and hit-point gains while preserving your current resources and hit points.', cls: 'guided-character-sheet__hint' });
+    apply.addEventListener('click', () => { void this.applyCharacterDraft(); });
+    const cancel = actions.createEl('button', { text: 'Cancel', cls: 'mod-muted', attr: { type: 'button' } });
+    cancel.addEventListener('click', () => { void this.cancelCharacterDraft(); });
+  }
+
+  private async cancelCharacterDraft(): Promise<void> {
+    await this.flushPendingUpdate();
+    if (this.file === null) return;
+    this.completedEditMode = false;
+    this.document = this.savedDocument === undefined ? null : structuredClone(this.savedDocument);
+    this.savedDocument = undefined;
+    this.inactiveClassHitPoints = [];
+    this.draftClassHitPoints = [];
+    this.conflict = false;
+    this.classLevelPreview = undefined;
+    this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
+    await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
+    await this.loadFromState();
+  }
+
+  private async applyCharacterDraft(): Promise<void> {
+    await this.flushPendingUpdate();
+    if (this.file === null || this.savedDocument === undefined || this.document === null || this.conflict) return;
+    this.draftApplyError = undefined;
+    try {
+      const sources = await this.loadCharacterSheetSources(this.document);
+      const reconciled = applyCharacterLevelDraft(this.savedDocument, this.document, sources);
+      const updated = await this.store.updateIfUnchanged(this.file, this.savedDocument, () => reconciled);
+      this.document = updated;
+      this.savedDocument = undefined;
+      this.completedEditMode = false;
+      this.inactiveClassHitPoints = [];
+      this.draftClassHitPoints = [];
+      this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
+      await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
+      await this.loadFromState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('changed externally')) { this.conflict = true; await this.render(); }
+      else { this.draftApplyError = message; await this.render(); }
+    }
+  }
+
   private renderCompletedSummary(root: HTMLElement, section: CharacterCreationSectionId): void {
     if (section === 'identity') root.createDiv({ text: `${this.document!.name} · ${this.document!.ruleset ?? 'Ruleset not selected'}`, cls: 'guided-character-sheet__summary' });
     if (section === 'species' && this.document!.origin) root.createDiv({ text: this.document!.origin.identifier, cls: 'guided-character-sheet__summary' });
@@ -1286,20 +1326,33 @@ export class CharacterView extends ItemView {
         this.sourceIndex.getBackgroundSummary(ruleset, this.document.background!.sourcePath),
       ]);
       const abilityResults = calculateAbilityScores(this.document.abilityScores!, sumAbilityBonuses(collectAbilityBonuses(species, classSummary, progression, background, this.document.backgroundChoices?.abilityScores)));
-      const levelOne = getLevelOneClassProgression(classSummary);
-      const proficiencyBonus = proficiencyBonusForLevel(progression.targetLevel) ?? levelOne.proficiencyBonus;
+      const classProgression = projectClassLevelProgression(classSummary, progression.targetLevel, { abilityModifiers: { str: abilityResults.str.modifier, dex: abilityResults.dex.modifier, con: abilityResults.con.modifier, int: abilityResults.int.modifier, wis: abilityResults.wis.modifier, cha: abilityResults.cha.modifier } });
+      if (classProgression.diagnostics.length > 0) { this.renderUnavailable(classProgression.diagnostics[0]!); return; }
+      const proficiencyBonus = proficiencyBonusForLevel(progression.targetLevel) ?? 2;
+      const classHitPoints: ClassHitPointEntry[] = this.document.classHitPoints ?? (progression.targetLevel === 1 ? [{ classSourcePath: classSummary.source.sourcePath, level: 1, value: 'max' }] : []);
+      const hitPointErrors = validateClassHitPoints(classHitPoints, classSummary.source.sourcePath, classSummary.hitDie, progression.targetLevel);
+      if (hitPointErrors.length > 0) { this.renderUnavailable(hitPointErrors[0]!); return; }
+      const draconicHpPerLevel = draconicSorceryHitPointsPerLevel(getEligibleClassFeatures(this.document, classSummary).map((feature) => ({ source: feature.source, effects: feature.activeEffects ?? [] })), ruleset);
       const mutable = createFinalizedMutableCharacterState(inventory, {
         ruleset,
         classSourcePath: classSummary.source.sourcePath,
         classHitDie: classSummary.hitDie,
         constitutionModifier: abilityResults.con.modifier,
         characterLevel: progression.targetLevel,
-        permanentHitPointModifiers: getEligibleSpeciesFeatures(this.document, species).flatMap((feature) => feature.hitPointModifiers ?? []).map((modifier) => ({ perLevel: modifier.perLevel, sourcePath: modifier.source.sourcePath })),
-        spellSlots: levelOne.spellcasting?.spellSlots ?? [],
+        permanentHitPointModifiers: [
+          ...getEligibleSpeciesFeatures(this.document, species).flatMap((feature) => feature.hitPointModifiers ?? []).map((modifier) => ({ perLevel: modifier.perLevel, sourcePath: modifier.source.sourcePath })),
+          ...(draconicHpPerLevel > 0 ? [{ perLevel: draconicHpPerLevel, sourcePath: 'packs/_source/classes24/sorcerer/subclass-features/draconic-sorcery/draconic-resilience.yml' }] : []),
+        ],
+        spellSlots: classProgression.spellcasting?.spellSlots ?? [],
         spellUses: collectFinalizationSpellUses(this.document, classSummary, species, progression.targetLevel, background, proficiencyBonus),
         resources: collectFinalizationResources(this.document, classSummary, species, background, proficiencyBonus),
       });
-      this.document = await this.store.update(this.file, (document) => withMutableState(document, mutable));
+      const permanentPerLevelBonus = (getEligibleSpeciesFeatures(this.document, species).flatMap((feature) => feature.hitPointModifiers ?? [])).reduce((total, modifier) => total + modifier.perLevel, 0) + draconicHpPerLevel;
+      if (mutable.hitPoints !== undefined) {
+        const maximum = calculateClassHitPoints(classHitPoints, classSummary.source.sourcePath, classSummary.hitDie, progression.targetLevel, abilityResults.con.modifier, permanentPerLevelBonus);
+        mutable.hitPoints = { ...mutable.hitPoints, current: maximum, maximum };
+      }
+      this.document = await this.store.update(this.file, (document) => ({ ...withMutableState(document, mutable), classHitPoints }));
       this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
       await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
       await this.loadFromState();
@@ -1461,15 +1514,14 @@ export class CharacterView extends ItemView {
       status.textContent = 'Saving…';
       this.queueUpdate((document) => withName(document, name));
     });
-    const state = getCharacterRenderState(this.document!, this.document!.ruleset === null ? undefined : await this.sourceReader.listOrigins(this.document!.ruleset));
-    if (state.kind === 'unavailable') { this.renderStateMessage(root, state.message); return; }
-    if (state.kind === 'ruleset') this.renderRuleset(root, state.options);
-    else this.renderOrigins(root, state.label, state.options);
+    this.renderRuleset(root, ['2014', '2024']);
   }
 
   private async renderSpeciesStep(root: HTMLElement): Promise<void> {
     if (this.document!.ruleset === null) { this.renderStateMessage(root, 'Choose a ruleset in Identity first.'); return; }
-    if (this.document!.origin === undefined) { const state = getCharacterRenderState(this.document!, await this.sourceReader.listOrigins(this.document!.ruleset)); if (state.kind === 'origin') this.renderOrigins(root, state.label, state.options); return; }
+    const originState = getCharacterRenderState(this.document!, await this.sourceReader.listOrigins(this.document!.ruleset));
+    if (originState.kind === 'origin') this.renderOrigins(root, originState.label, originState.options);
+    if (this.document!.origin === undefined) return;
     const summary = await this.sourceIndex.getSpeciesSummary(this.document!.ruleset, this.document!.origin.sourcePath);
     const snapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion };
     const built = buildSpeciesConfiguration(summary, snapshot);
@@ -1497,6 +1549,61 @@ export class CharacterView extends ItemView {
     await this.render();
   }
 
+  private async renderLevelDraftHitPoints(root: HTMLElement, summary: ClassSourceSummary, targetLevel: number): Promise<void> {
+    const document = this.document;
+    if (document === null || document.ruleset === null || document.origin === undefined || document.background === undefined || document.abilityScores === undefined) return;
+    const panel = root.createDiv({ cls: 'guided-character-sheet__level-hit-points' });
+    panel.createEl('h4', { text: 'Hit-point gains' });
+    panel.createDiv({ text: `Previous calculated maximum: ${this.savedDocument?.mutable?.hitPoints?.maximum ?? 'unavailable'}.`, cls: 'guided-character-sheet__hint' });
+    let species: SpeciesSourceSummary;
+    let background: BackgroundSourceSummary;
+    try { [species, background] = await Promise.all([this.sourceIndex.getSpeciesSummary(document.ruleset, document.origin.sourcePath), this.sourceIndex.getBackgroundSummary(document.ruleset, document.background.sourcePath)]); }
+    catch { panel.createDiv({ text: 'Species or background source is unavailable for hit-point calculation.', cls: 'guided-character-sheet__warning' }); return; }
+    const progression = document.classProgressions?.[0];
+    if (progression === undefined) return;
+    const abilities = calculateAbilityScores(document.abilityScores, sumAbilityBonuses(collectAbilityBonuses(species, summary, progression, background, document.backgroundChoices?.abilityScores)));
+    const permanent = getEligibleSpeciesFeatures(document, species).flatMap((feature) => feature.hitPointModifiers ?? []);
+    const dieMaximum = Number(/^d(\d+)$/i.exec(summary.hitDie)?.[1] ?? 0);
+    if (dieMaximum < 1) { panel.createDiv({ text: `Unable to determine the class hit die from ${summary.source.sourcePath}.`, cls: 'guided-character-sheet__warning' }); return; }
+    const status = panel.createDiv({ cls: 'guided-character-sheet__hint' });
+    const refresh = (): void => {
+      const entries = this.draftClassHitPoints.filter((entry) => entry.classSourcePath === summary.source.sourcePath && entry.level <= targetLevel);
+      const errors = validateClassHitPoints(entries, summary.source.sourcePath, summary.hitDie, targetLevel);
+      if (errors.length > 0) { status.textContent = `Proposed maximum: enter each missing gain. ${errors[0]}`; return; }
+      const bonus = permanent.reduce((total, entry) => total + entry.perLevel, 0);
+      const maximum = calculateClassHitPoints(entries, summary.source.sourcePath, summary.hitDie, targetLevel, abilities.con.modifier, bonus);
+      status.textContent = `Proposed calculated maximum: ${maximum}. Apply restores current HP to the effective maximum and clears temporary HP.`;
+    };
+    const entries = this.draftClassHitPoints.filter((entry) => entry.classSourcePath === summary.source.sourcePath);
+    for (let level = 2; level <= targetLevel; level += 1) {
+      const existing = entries.find((entry) => entry.level === level);
+      const field = panel.createDiv({ cls: 'guided-character-sheet__field' });
+      field.createEl('label', { text: `Level ${level} gain` });
+      const choice = field.createEl('select', { attr: { 'aria-label': `Level ${level} hit-point gain` } });
+      choice.createEl('option', { value: '', text: 'Choose average or rolled gain' });
+      choice.createEl('option', { value: 'avg', text: `Average (${Math.floor(dieMaximum / 2) + 1})` });
+      choice.createEl('option', { value: 'roll', text: 'Enter rolled gain' });
+      choice.value = existing === undefined ? '' : typeof existing.value === 'number' ? 'roll' : 'avg';
+      const roll = field.createEl('input', { type: 'number', value: typeof existing?.value === 'number' ? String(existing.value) : '', attr: { min: '1', max: String(dieMaximum), step: '1', 'aria-label': `Level ${level} rolled hit-point gain` } });
+      roll.disabled = choice.value !== 'roll';
+      const save = (): void => {
+        const value = choice.value === 'avg' ? 'avg' : choice.value === 'roll' && Number.isInteger(Number(roll.value)) && Number(roll.value) >= 1 && Number(roll.value) <= dieMaximum ? Number(roll.value) : undefined;
+        this.draftClassHitPoints = setClassHitPointGain(this.draftClassHitPoints, summary.source.sourcePath, level, value);
+        const active = this.draftClassHitPoints.filter((entry) => entry.classSourcePath === summary.source.sourcePath && entry.level <= targetLevel);
+        this.queueUpdate((current) => {
+          const next = { ...current };
+          if (validateClassHitPoints(active, summary.source.sourcePath, summary.hitDie, targetLevel).length === 0) next.classHitPoints = active;
+          else delete next.classHitPoints;
+          return next;
+        });
+        refresh();
+      };
+      choice.addEventListener('change', () => { roll.disabled = choice.value !== 'roll'; save(); });
+      roll.addEventListener('change', save);
+    }
+    refresh();
+  }
+
   private async renderClassStep(root: HTMLElement): Promise<void> {
     if (this.document!.ruleset === null) { this.renderStateMessage(root, 'Choose a ruleset in Identity first.'); return; }
     if (this.document!.origin === undefined) { this.renderStateMessage(root, 'Choose a species before choosing a class.'); return; }
@@ -1506,7 +1613,14 @@ export class CharacterView extends ItemView {
     const availability = getClassRenderState(this.document!, undefined, undefined, options);
     if (availability.kind === 'class-unavailable') { this.renderStateMessage(root, availability.message); return; }
     const field = root.createDiv({ cls: 'guided-character-sheet__field' }); field.createEl('label', { text: 'Class' }); const select = field.createEl('select'); const placeholder = select.createEl('option', { value: '', text: 'Select a class' }); placeholder.disabled = true; for (const option of options) { const element = select.createEl('option', { value: option.id, text: option.name }); element.selected = selected?.class.id === option.id; }
-    select.addEventListener('change', () => { const option = options.find((candidate) => candidate.id === select.value); if (option) { this.activeSection = 'class'; void this.selectClass(option); } });
+    select.addEventListener('change', () => {
+      const option = options.find((candidate) => candidate.id === select.value);
+      if (option === undefined) return;
+      const current = selected?.class;
+      const replacing = current !== undefined && (current.sourcePath !== option.sourcePath || current.id !== option.id);
+      if (replacing) new CharacterResetModal(this.app, 'Replace class?', 'Replacing the class resets class-dependent choices, hit-point history, and sheet state.', 'Replace class', () => { this.inactiveClassHitPoints = []; this.draftClassHitPoints = []; this.classLevelPreview = undefined; this.activeSection = 'class'; void this.selectClass(option); }, () => { void this.render(); }).open();
+      else { this.classLevelPreview = undefined; this.activeSection = 'class'; void this.selectClass(option); }
+    });
     if (options.length === 0) this.renderStateMessage(root, 'No classes are available for this ruleset.');
     if (selected === undefined) {
       root.createEl('h3', { text: 'Class' });
@@ -1514,10 +1628,37 @@ export class CharacterView extends ItemView {
     }
     let summary: ClassSourceSummary;
     try { summary = await this.sourceIndex.getClassSummary(ruleset, selected.class.sourcePath); } catch (error) { root.createDiv({ text: `Unable to read saved class source: ${selected.class.sourcePath}`, cls: 'guided-character-sheet__warning' }); root.createDiv({ text: error instanceof Error ? error.message : String(error), cls: 'guided-character-sheet__warning' }); return; }
-    const built = buildClassConfiguration(summary, { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion }, selected.targetLevel);
-    const configuration = restoreClassConfiguration(selected, { class: selected.class, summary, configuration: built });
-    const state = getClassRenderState(this.document!, summary, configuration);
+    const targetLevel = this.classLevelPreview?.sourcePath === selected.class.sourcePath ? this.classLevelPreview.level : selected.targetLevel;
+    const built = buildClassConfiguration(summary, { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion }, targetLevel);
+    const previewSelection = trimClassProgression(selected, summary, targetLevel);
+    const configuration = restoreClassConfiguration(previewSelection, { class: selected.class, summary, configuration: built });
+    const previewDocument = targetLevel < selected.targetLevel ? projectClassLevelPreviewDocument(this.document!, summary, targetLevel) : this.document!;
+    const state = getClassRenderState(previewDocument, summary, configuration);
     if (state.kind !== 'class-summary') return;
+    const tablist = root.createDiv({ cls: 'guided-character-sheet__class-tabs', attr: { role: 'tablist', 'aria-label': 'Class tabs' } });
+    tablist.createEl('button', { text: `${state.name} · Level ${targetLevel}`, cls: 'guided-character-sheet__class-tab is-active', attr: { type: 'button', role: 'tab', 'aria-selected': 'true', tabindex: '0' } });
+    const levelField = root.createDiv({ cls: 'guided-character-sheet__field guided-character-sheet__level-selector' });
+    const levelLabel = levelField.createEl('label', { text: 'Level' });
+    const levelSelect = levelLabel.createEl('select', { attr: { 'aria-label': this.completedEditMode ? 'Class level' : 'Class level preview' } });
+    for (let level = 1; level <= 20; level += 1) levelSelect.createEl('option', { value: String(level), text: String(level) }).selected = targetLevel === level;
+    levelSelect.addEventListener('change', () => {
+      const level = Number(levelSelect.value);
+      if (!Number.isInteger(level) || level < 1 || level > 20) return;
+      if (this.completedEditMode) {
+        this.draftClassHitPoints = this.draftClassHitPoints.length > 0 ? this.draftClassHitPoints : structuredClone(this.inactiveClassHitPoints.length > 0 ? this.inactiveClassHitPoints : this.document?.classHitPoints ?? []);
+        this.queueUpdate((document) => {
+          const result = updateClassLevelDraft(document, summary, level, this.draftClassHitPoints.length > 0 ? this.draftClassHitPoints : this.inactiveClassHitPoints.length > 0 ? this.inactiveClassHitPoints : document.classHitPoints ?? []);
+          this.inactiveClassHitPoints = result.comparisonHitPoints;
+          return result.document;
+        });
+        return;
+      }
+      this.classLevelPreview = { sourcePath: selected.class.sourcePath, level };
+      root.empty();
+      void this.renderClassStep(root);
+    });
+    if (this.completedEditMode) await this.renderLevelDraftHitPoints(root, summary, targetLevel);
+    const classPanel = root.createDiv({ cls: 'guided-character-sheet__class-panel', attr: { role: 'tabpanel', 'aria-label': `${state.name} class progression` } });
     const [backgroundProficiencySource, speciesProficiencySource] = await Promise.all([
       this.document!.background === undefined
         ? Promise.resolve(undefined)
@@ -1534,16 +1675,17 @@ export class CharacterView extends ItemView {
           return speciesSelection === undefined ? speciesBuilt : restoreSpeciesConfiguration(speciesSelection, { origin: this.document!.origin!, summary: speciesProficiencySource, grants: speciesBuilt.grants, choices: speciesBuilt.choices, spellChoices: speciesBuilt.spellChoices });
         })();
     const expertiseProficiencies = collectExpertiseProficiencies({ classSummary: summary, classConfiguration: configuration, background: backgroundProficiencySource, speciesSummary: speciesProficiencySource, speciesConfiguration: speciesProficiencyConfiguration });
-    root.createDiv({ text: 'Review what this choice provides before continuing.', cls: 'guided-character-sheet__hint' });
-    renderLevelOneProgressionSummary(root, getLevelOneProgressionSummary(summary, configuration), this.document!, configuration);
+    if (targetLevel !== selected.targetLevel && !this.completedEditMode) classPanel.createDiv({ text: 'Class choices are read-only while previewing another level.', cls: 'guided-character-sheet__hint' });
+    classPanel.createDiv({ text: 'Review what this choice provides before continuing.', cls: 'guided-character-sheet__hint' });
     const weaponLabels = await resolveWeaponLabels(this.sourceIndex, new Set(state.proficiencies?.weapons ?? []), ruleset);
-    this.renderClassTraits(root, state, weaponLabels);
-    this.renderClassCallout(root, 'Overview', true, (content) => renderFoundryOverview(content, summary.overviewHtml, summary.description ?? 'No description is available for this class.'));
-    const features = getClassFeatureCallouts(state);
-    if (features.length > 0) {
-      root.createEl('h4', { text: 'Features', cls: 'guided-character-sheet__features-heading' });
-      for (const feature of features) this.renderClassCallout(root, `${feature.name} · Level ${feature.level}`, false, (content) => content.createDiv({ text: feature.description ?? 'No description is available for this feature.' }));
+    this.renderClassTraits(classPanel, state, weaponLabels);
+    this.renderClassCallout(classPanel, 'Overview', true, (content) => renderFoundryOverview(content, summary.overviewHtml, summary.description ?? 'No description is available for this class.'));
+    const levelCards = buildClassLevelCards(summary, configuration);
+    const firstIncompleteLevel = getFirstIncompleteClassLevel(configuration) ?? 1;
+    if (levelCards.length > 0) {
+      classPanel.createEl('h4', { text: 'Features by level', cls: 'guided-character-sheet__features-heading' });
     }
+    const cardElements = renderClassLevelCards(classPanel, levelCards, firstIncompleteLevel);
     const eligibleChoiceIds = new Set(state.choices.map((choice) => choice.advancementId));
     const selectedFeatReferences = (this.document!.classProgressions?.[0]?.selections ?? []).flatMap((selection) => {
       if (!eligibleChoiceIds.has(selection.advancementId)) return [];
@@ -1563,8 +1705,8 @@ export class CharacterView extends ItemView {
       selectedFeatCallouts.set(key, summary ?? { source: reference });
     });
     if (selectedFeatCallouts.size > 0) {
-      root.createEl('h4', { text: 'Selected feats', cls: 'guided-character-sheet__features-heading' });
-      for (const feat of selectedFeatCallouts.values()) this.renderClassCallout(root, feat.source.name, false, (content) => content.createDiv({ text: feat.description ?? 'Feat source is unavailable.' }));
+      classPanel.createEl('h4', { text: 'Selected feats', cls: 'guided-character-sheet__features-heading' });
+      for (const feat of selectedFeatCallouts.values()) this.renderClassCallout(classPanel, feat.source.name, false, (content) => content.createDiv({ text: feat.description ?? 'Feat source is unavailable.' }));
     }
     if (configuration.choices.length > 0) {
       const spellQuery = spellCatalogQuery(this.sourceIndex, ruleset);
@@ -1580,19 +1722,27 @@ export class CharacterView extends ItemView {
         const resolved = items.map((item) => classChoiceDisplayOptionFromSource(item, selector, masteryDescriptions));
         resolvedPools.set(choice.advancementId, [...(resolvedPools.get(choice.advancementId) ?? []), ...resolved]);
       })));
-      root.createEl('h4', { text: 'Feature selections', cls: 'guided-character-sheet__features-heading' });
       const orderedChoices = [...state.choices].sort((left, right) => classChoicePriority(left) - classChoicePriority(right));
       const weaponTraining = getEligibleClassProficiencies(this.document!, summary)?.weapons ?? [];
       const knownLanguages = getKnownLanguageKeys(this.document!, { warnings: [], species: speciesProficiencySource, class: summary, background: backgroundProficiencySource });
-      for (const choice of orderedChoices) this.renderClassCallout(root, getClassChoiceHeading(configuration, choice), true, (content) => renderClassConfigurationControls(content, configuration, (next, changedSelection) => this.queueUpdate((document) => {
-        const current = document.classProgressions?.[0];
-        return current === undefined || changedSelection === undefined
-          ? withClassProgression(document, toClassProgressionSelection(next))
-          : withClassProgression(document, mergeClassSelection(current, changedSelection));
-      }), choice.advancementId, spellQuery, resolvedPools, expertiseProficiencies, weaponTraining, knownLanguages));
+      for (const choice of orderedChoices) {
+        const card = levelCards.flatMap((row) => row.cards).find((candidate) => candidate.choiceAdvancementIds.includes(choice.advancementId));
+        const target = card === undefined ? undefined : cardElements.get(card.key);
+        if (target === undefined) continue;
+        const controls = target.createDiv({ cls: 'guided-character-sheet__level-card-choice' });
+        controls.createEl('h6', { text: getClassChoiceHeading(configuration, choice) });
+        const fieldset = controls.createEl('fieldset', { cls: 'guided-character-sheet__level-card-controls' });
+        fieldset.disabled = targetLevel !== selected.targetLevel;
+        renderClassConfigurationControls(fieldset, configuration, (next, changedSelection) => this.queueUpdate((document) => {
+          const current = document.classProgressions?.[0];
+          return current === undefined || changedSelection === undefined
+            ? withClassProgression(document, toClassProgressionSelection(next))
+            : withClassProgression(document, mergeClassSelection(current, changedSelection));
+        }), choice.advancementId, spellQuery, resolvedPools, expertiseProficiencies, weaponTraining, knownLanguages);
+      }
     }
     if (state.startingEquipment) {
-      const content = this.renderClassCallout(root, 'Starting equipment', true, (content) => {
+      const content = this.renderClassCallout(classPanel, 'Starting equipment', true, (content) => {
         content.createDiv({ text: 'Choose the starting package and any specific items it requires.', cls: 'guided-character-sheet__hint' });
         this.renderEquipmentPackages(content, state.startingEquipment!, this.document!.classEquipment, new Map(), (selection) => this.queueUpdate((document) => {
           const next = withClassEquipment(document, selection);
@@ -1609,7 +1759,7 @@ export class CharacterView extends ItemView {
         }));
       }).catch((error: unknown) => content.createDiv({ text: error instanceof Error ? error.message : String(error), cls: 'guided-character-sheet__warning' }));
     }
-    for (const diagnostic of state.diagnostics) root.createDiv({ text: diagnostic, cls: 'guided-character-sheet__warning' });
+    for (const diagnostic of state.diagnostics) classPanel.createDiv({ text: diagnostic, cls: 'guided-character-sheet__warning' });
   }
 
   private renderEquipmentPackages(root: HTMLElement, summary: EquipmentPackageSummary, saved: EquipmentSelection | undefined, itemChoices: Map<string, FoundryItemSummary[]>, onChange: (selection: EquipmentSelection) => void): void {
@@ -1816,7 +1966,7 @@ export class CharacterView extends ItemView {
     });
   }
 
-  private async selectClass(option: CharacterSourceOption): Promise<void> { const summary = await this.sourceIndex.getClassSummary(this.document!.ruleset!, option.sourcePath); const configuration = buildClassConfiguration(summary, { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion }, 1); this.queueUpdate((document) => withClassProgression(document, toClassProgressionSelection(configuration))); }
+  private async selectClass(option: CharacterSourceOption): Promise<void> { const summary = await this.sourceIndex.getClassSummary(this.document!.ruleset!, option.sourcePath); const configuration = buildClassConfiguration(summary, { owner: 'foundryvtt', repo: 'dnd5e', branch: this.document!.foundry.sourceBranch, commit: this.document!.foundry.sourceCommit, systemVersion: this.document!.foundry.systemVersion }, 1); this.queueUpdate((document) => { const updated = withClassProgression(document, toClassProgressionSelection(configuration)); if (document.classProgressions?.[0]?.class.sourcePath !== option.sourcePath) delete updated.classHitPoints; return updated; }); }
 
   private async renderCharacterPicker(): Promise<void> {
     this.contentEl.empty();
@@ -1862,6 +2012,10 @@ export class CharacterView extends ItemView {
   private async editCharacter(): Promise<void> {
     await this.flushPendingUpdate();
     if (this.file === null) return;
+    this.savedDocument = this.document === null ? undefined : structuredClone(this.document);
+    this.completedEditMode = true;
+    this.draftApplyError = undefined;
+    this.classLevelPreview = undefined;
     this.viewState = { mode: 'create', filePath: this.file.path };
     await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
     await this.loadFromState();
@@ -1880,9 +2034,16 @@ export class CharacterView extends ItemView {
     const select = field.createEl('select');
     const placeholder = select.createEl('option', { value: '', text: 'Select a ruleset' });
     placeholder.disabled = true;
-    placeholder.selected = true;
-    for (const option of options) select.createEl('option', { value: option, text: option });
-    select.addEventListener('change', () => { const value = select.value; if (value === '2014' || value === '2024') { this.activeSection = 'species'; this.queueUpdate((document) => withRuleset(document, value)); } });
+    placeholder.selected = this.document?.ruleset === null;
+    for (const option of options) { const element = select.createEl('option', { value: option, text: option }); element.selected = this.document?.ruleset === option; }
+    select.addEventListener('change', () => {
+      const value = select.value;
+      if (value !== '2014' && value !== '2024' || value === this.document?.ruleset) return;
+      const changeRuleset = (): void => { this.inactiveClassHitPoints = []; this.draftClassHitPoints = []; this.activeSection = 'species'; this.queueUpdate((document) => { const reset = withRuleset(document, value); delete reset.classHitPoints; return reset; }); };
+      if (shouldConfirmRulesetReset(this.document!)) {
+        new CharacterResetModal(this.app, 'Change ruleset?', 'Changing the ruleset resets this character’s selections and sheet state.', 'Reset character', changeRuleset, () => { void this.render(); }).open();
+      } else changeRuleset();
+    });
   }
 
   private renderOrigins(root: HTMLElement, label: 'Race' | 'Species', options: CharacterSourceOption[]): void {
@@ -1964,6 +2125,12 @@ export class CharacterView extends ItemView {
 
   private queueUpdate(update: (document: CharacterDocument) => CharacterDocument): void {
     if (this.opened === false) return;
+    if (this.completedEditMode) {
+      if (this.document === null || this.conflict) return;
+      try { this.draftApplyError = undefined; this.document = parseCharacterDocument(update(this.document)); void this.render(); }
+      catch (error) { this.renderUnavailable(error instanceof Error ? error.message : String(error)); }
+      return;
+    }
     this.queuedUpdateCount += 1;
     const pending = this.pendingUpdate;
     this.pendingUpdate = pending === undefined ? update : (document) => update(pending(document));
@@ -2014,6 +2181,13 @@ export class CharacterView extends ItemView {
     if (this.pendingUpdate === undefined && this.queuedUpdateCount > 0) { this.conflict = true; this.renderUnavailable('This character changed externally while you had a pending edit. Reload before retrying.'); return; }
     try {
       const latest = await this.store.read(this.file);
+      if (this.completedEditMode) {
+        if (this.savedDocument !== undefined && !sameCharacterDocument(latest, this.savedDocument)) {
+          this.conflict = true;
+          await this.render();
+        }
+        return;
+      }
       if (this.lastWrittenDocument !== undefined && sameCharacterDocument(latest, this.lastWrittenDocument)) {
         this.lastWrittenDocument = undefined;
         return;
@@ -2196,7 +2370,7 @@ export function collectFinalizationSpellUses(document: CharacterDocument, classS
     const recovery = reset === 'short-rest' || reset === 'long-rest' ? [{ period: reset, type: 'recover-all' as const }] : [];
     uses.set(key, { key, current: maximum, maximum, reset, ...(recovery.length === 0 ? {} : { recovery }) });
   };
-  const classAdvancementIds = new Set([...classSummary.advancements.filter((entry) => entry.level <= targetLevel).map((entry) => entry.id), ...getLevelOneDerivedSpellChoices(classSummary).map((entry) => entry.advancementId)]);
+  const classAdvancementIds = new Set([...classSummary.advancements.filter((entry) => entry.level <= targetLevel).map((entry) => entry.id), ...getLevelOneDerivedSpellChoices(classSummary, targetLevel).map((entry) => entry.advancementId)]);
   for (const selection of document.classProgressions?.flatMap((entry) => entry.selections) ?? []) if (selection.kind === 'spell' && classAdvancementIds.has(selection.advancementId)) for (const reference of selection.selected) add(reference, selection.raw);
   for (const choice of document.speciesConfiguration?.spellChoices ?? []) if (choice.kind === 'spell') { const advancement = species.advancements.find((entry) => entry.id === choice.advancementId); if (advancement !== undefined && advancement.level <= targetLevel) for (const reference of choice.selected) add(reference, advancement.raw); }
   for (const grant of species.spellGrants ?? []) if (grant.level <= targetLevel) for (const reference of grant.spells) add(reference, grant.raw);

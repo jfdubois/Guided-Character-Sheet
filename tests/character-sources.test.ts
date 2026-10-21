@@ -6,10 +6,11 @@ import { buildSpeciesConfiguration, restoreSpeciesConfiguration, toSpeciesConfig
 import type { SourceStoreAdapter } from '../src/source-store';
 import type { SourceSnapshot } from '../src/source-tree';
 import { isRecord } from '../src/foundry-utils';
-import { buildClassConfiguration, getLevelOneDerivedSpellChoices, setClassSelection, toClassProgressionSelection } from '../src/class-configuration';
+import { buildClassConfiguration, getLevelOneDerivedSpellChoices, setClassSelection, toClassProgressionSelection, validateClassConfiguration } from '../src/class-configuration';
 import { createCharacterDocument, withOrigin, withClassProgression, withRuleset } from '../src/character-model';
 import { getLevelOneClassProgression } from '../src/level-one-progression';
-import { createPinnedSourceIndex } from './support/pinned-foundry-source';
+import { projectClassLevelProgression } from '../src/class-level-progression';
+import { createPinnedFoundryAdapter, createPinnedSourceIndex, PINNED_FOUNDRY_ROOT } from './support/pinned-foundry-source';
 
 function memoryAdapter(files: Record<string, string>): SourceReaderAdapter {
   return {
@@ -491,7 +492,7 @@ _id: registry`,
     ]);
   });
 
-  it('projects the pinned 2024 Wizard level-one progression and preserves scale thresholds', async () => {
+  it('projects pinned Wizard spell sources and the documented two-spells-per-level rule', async () => {
     const root = join(process.cwd(), 'external/foundryvtt/dnd5e');
     const index = createSourceIndex({
       async exists(path) { try { await fs.access(path); return true; } catch { return false; } },
@@ -503,10 +504,45 @@ _id: registry`,
     expect(summary.spellOptions).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Acid Splash', level: 0, spellLists: expect.arrayContaining(['wizard']) }),
       expect.objectContaining({ name: 'Alarm', level: 1, spellLists: expect.arrayContaining(['wizard']) }),
+      expect.objectContaining({ name: 'Arcane Lock', level: 2, spellLists: expect.arrayContaining(['wizard']) }),
     ]));
     expect(summary.spellcasting?.progression).toBe('full');
     const scale = summary.scales?.find((entry) => entry.identifier === 'max-prepared');
     expect(scale?.values).toEqual(new Map([[1, 4], [2, 5], [3, 6], [4, 7], [5, 9], [6, 10], [7, 11], [8, 12], [9, 14], [10, 15], [11, 16], [13, 17], [14, 18], [15, 19], [16, 21], [17, 22], [18, 23], [19, 24], [20, 25]].map(([level, value]) => [level, { type: 'number', value }])));
+    expect(projectClassLevelProgression(summary, 1).spellcasting?.spellbookSpells).toBe(6);
+    expect(projectClassLevelProgression(summary, 2).spellcasting?.spellbookSpells).toBe(8);
+    expect(projectClassLevelProgression(summary, 3).spellcasting?.spellbookSpells).toBe(10);
+    expect(projectClassLevelProgression(summary, 3).diagnostics).toEqual([]);
+    const secondLevelChoices = getLevelOneDerivedSpellChoices(summary, 3).filter((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(secondLevelChoices).toHaveLength(1);
+    expect(secondLevelChoices[0]).toMatchObject({ level: -1, count: 10, maxLevel: 2 });
+    expect(secondLevelChoices[0]?.kind === 'spell' ? secondLevelChoices[0].options?.some((option) => option.source.name === 'Arcane Lock') : false).toBe(true);
+    if (secondLevelChoices[0]?.kind === 'spell') {
+      const oneLevelSpells = secondLevelChoices[0].options!.filter((option) => isRecord(option.source) && option.source.level === 1).slice(0, 8).map((option) => option.source);
+      const arcaneLock = secondLevelChoices[0].options!.find((option) => option.source.name === 'Arcane Lock')!.source;
+      const anotherSecondLevel = secondLevelChoices[0].options!.find((option) => isRecord(option.source) && option.source.level === 2 && option.source.id !== arcaneLock.id)!.source;
+      const selected = { ...secondLevelChoices[0], selected: [...oneLevelSpells, arcaneLock, anotherSecondLevel] };
+      const configuration = buildClassConfiguration(summary, { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' }, 3);
+      const selectedConfiguration = setClassSelection(configuration, selected);
+      expect(validateClassConfiguration(selectedConfiguration, { class: selectedConfiguration.class, summary, configuration: selectedConfiguration })).toEqual([]);
+      const persisted = toClassProgressionSelection(selectedConfiguration);
+      expect(persisted.selections.find((choice) => choice.advancementId === selected.advancementId)?.kind === 'spell' ? (persisted.selections.find((choice) => choice.advancementId === selected.advancementId) as Extract<typeof selected, { kind: 'spell' }>).selected.map((spell) => spell.name) : []).toContain('Arcane Lock');
+    }
+    const missingFeatureIdentity = { ...summary, features: summary.features?.filter((feature) => feature.source.identifier !== 'spellcasting') };
+    expect(projectClassLevelProgression(missingFeatureIdentity, 3).diagnostics.join(' ')).toMatch(/Spellcasting source identity/i);
+  });
+
+  it('projects pinned 2014 Cleric preparation capacity using its resolved Wisdom modifier', async () => {
+    const root = join(process.cwd(), 'external/foundryvtt/dnd5e');
+    const index = createSourceIndex({
+      async exists(path) { try { await fs.access(path); return true; } catch { return false; } },
+      async list(path) { const entries = await fs.readdir(path, { recursive: true, withFileTypes: true }); return entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath ?? entry.path, entry.name)); },
+      async read(path) { return fs.readFile(path, 'utf8'); },
+    }, root);
+    const summary = await index.getClassSummary('2014', 'packs/_source/classes/cleric.yml');
+    const result = projectClassLevelProgression(summary, 3, { abilityModifiers: { wis: 3 } });
+    expect(result.spellcasting?.preparedCapacity).toBe(6);
+    expect(result.diagnostics).toEqual([]);
   });
 
   it('reads typed scale values and derives blank identifiers from advancement titles', async () => {
@@ -957,6 +993,32 @@ _id: dwarf-id`,
     expect(domain?.dependencies.every((dependency) => dependency.source?.type === 'subclass')).toBe(true);
     expect(domain?.dependencies.some((dependency) => dependency.source?.name === 'Life Domain')).toBe(true);
     expect(domain?.dependencies.find((dependency) => dependency.source?.name === 'Life Domain')?.description).toContain('The Life domain focuses');
+  });
+
+  it('loads subclasses from the ruleset-specific pack for pinned Rogue sources', async () => {
+    const index = createPinnedSourceIndex();
+    const rogue2024 = await index.getClassSummary('2024', 'packs/_source/classes24/rogue/rogue.yml');
+    const rogue2014 = await index.getClassSummary('2014', 'packs/_source/classes/rogue.yml');
+    const subclassAdvancement = (summary: typeof rogue2024) => summary.advancements.find((entry) => entry.type === 'Subclass');
+
+    expect(subclassAdvancement(rogue2024)?.dependencies.map((dependency) => dependency.source?.name)).toContain('Thief');
+    expect(subclassAdvancement(rogue2024)?.dependencies.every((dependency) => dependency.source?.type === 'subclass' && dependency.source.pack === 'dnd5e.classes24')).toBe(true);
+    expect(subclassAdvancement(rogue2014)?.dependencies.some((dependency) => dependency.source?.type === 'subclass' && dependency.source.pack === 'dnd5e.subclasses')).toBe(true);
+  });
+
+  it('limits pinned 2024 subclass indexing to the selected class source folder', async () => {
+    const pinned = createPinnedFoundryAdapter();
+    const reads: string[] = [];
+    const adapter: SourceReaderAdapter = {
+      exists: (path) => pinned.exists(path),
+      list: (path) => pinned.list(path),
+      async read(path) { reads.push(path); return pinned.read(path); },
+    };
+    const index = createSourceIndex(adapter, PINNED_FOUNDRY_ROOT);
+
+    await index.getClassSummary('2024', 'packs/_source/classes24/rogue/rogue.yml');
+
+    expect(reads.some((path) => path.includes('/packs/_source/classes24/wizard/') && !path.endsWith('/packs/_source/classes24/wizard/wizard.yml'))).toBe(false);
   });
 
   it('keeps pinned class spell advancement semantics across the four regression classes', async () => {

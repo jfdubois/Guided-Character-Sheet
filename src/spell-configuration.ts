@@ -24,6 +24,7 @@ export interface SpellChoice {
   label: string;
   count: number;
   level: number;
+  maxLevel?: number;
   spellLists: SpellListId[];
   selected: SpellChoiceSelection[];
   abilityOptions: string[];

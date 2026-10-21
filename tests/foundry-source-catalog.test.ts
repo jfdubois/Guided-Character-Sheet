@@ -10,6 +10,26 @@ function memoryAdapter(files: Record<string, string>): FoundrySourceCatalogAdapt
 }
 
 describe('Foundry source catalog', () => {
+  it('falls back to the rest of a pack for a scoped dependency outside the current source folder', async () => {
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      'sources/packs/_source/classes24/wizard/cross-class-feature.yml': `type: feat\nname: Cross-class feature\n_id: cross-class-feature\nsystem: { source: { rules: '2024' } }`,
+    }), 'sources');
+
+    await expect(catalog.resolveDependencies({ uuid: 'Compendium.dnd5e.classes24.Item.cross-class-feature' }, '2024', { pack: 'classes24', directory: 'rogue' })).resolves.toEqual([
+      expect.objectContaining({ uuid: 'Compendium.dnd5e.classes24.Item.cross-class-feature', source: expect.objectContaining({ sourcePath: 'packs/_source/classes24/wizard/cross-class-feature.yml' }) }),
+    ]);
+  });
+
+  it('filters scoped pack results even when other directories were already indexed', async () => {
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      'sources/packs/_source/classes24/rogue/rogue.yml': `type: class\nname: Rogue\n_id: rogue\nsystem: { source: { rules: '2024' } }`,
+      'sources/packs/_source/classes24/wizard/wizard.yml': `type: class\nname: Wizard\n_id: wizard\nsystem: { source: { rules: '2024' } }`,
+    }), 'sources');
+    await catalog.listPack('classes24');
+
+    await expect(catalog.listPack('classes24', 'rogue')).resolves.toEqual([expect.objectContaining({ sourcePath: 'packs/_source/classes24/rogue/rogue.yml' })]);
+  });
+
   it.each([
     ['weapon', 'false', true],
     ['equipment', 'true', true],

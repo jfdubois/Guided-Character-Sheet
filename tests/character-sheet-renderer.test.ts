@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderCharacterSheet } from '../src/character-sheet-renderer';
 import type { CharacterSheetProjection } from '../src/character-sheet-model';
+import { setTooltip } from 'obsidian';
 
 const available = <T>(value: T) => ({ kind: 'available' as const, value });
 const missing = <T>(reason: string) => ({ kind: 'missing' as const, reason });
@@ -119,6 +120,32 @@ describe('read-only character sheet renderer', () => {
     expect(onToggle).toHaveBeenNthCalledWith(2, true);
   });
 
+  it('renders systematic initiative and skill advantage with accessible source labels', () => {
+    const rendered = createSheetTestRoot();
+    const sheet = structuredClone(completeSheet);
+    sheet.header.initiativeAnnotations = [{ marker: 'A', source: 'Feral Instinct, Remarkable Athlete' }];
+    sheet.skills.find(({ key }) => key === 'ath')!.annotations = [{ marker: 'A', source: 'Remarkable Athlete' }];
+    renderCharacterSheet(rendered.root, sheet, { characters: [], selectedFilePath: 'Ayla.json', selectedSection: 'abilities', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+
+    expect(rendered.text).toContain('A');
+    expect(rendered.ariaLabels).toContain('Advantage on initiative from Feral Instinct, Remarkable Athlete');
+    expect(rendered.ariaLabels).toContain('Advantage on Athletics skill from Remarkable Athlete');
+  });
+
+  it('keeps walking speed compact and exposes additional movement in a focusable tooltip', () => {
+    const rendered = createSheetTestRoot();
+    const sheet = structuredClone(completeSheet);
+    sheet.header.speed = available('30 ft.');
+    sheet.header.speedDetails = available('Walking: 30 ft.; Climb: 30 ft.');
+    renderCharacterSheet(rendered.root, sheet, { characters: [], selectedFilePath: 'Ayla.json', selectedSection: 'abilities', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+
+    expect(rendered.text).toContain('30 ft.');
+    expect(rendered.ariaLabels).toContain('Speed details: Walking: 30 ft.; Climb: 30 ft.');
+    expect(rendered.classes).toContain('guided-character-sheet__speed-disclosure');
+    expect(rendered.classText['guided-character-sheet__speed-disclosure-content']).toEqual(['Walking: 30 ft.; Climb: 30 ft.']);
+    expect(setTooltip).toHaveBeenCalledWith(expect.anything(), 'Walking: 30 ft.; Climb: 30 ft.');
+  });
+
   it('disables inspiration when its state or update control is unavailable', () => {
     const missingView = createSheetTestRoot();
     renderCharacterSheet(missingView.root, completeSheet, {
@@ -223,7 +250,7 @@ describe('read-only character sheet renderer', () => {
         { ability: 'int', label: 'Intelligence', proficient: available(false), modifier: available(1), annotations: [{ marker: 'A', source: 'Gnomish Cunning' }, { marker: 'D', source: 'Test condition' }] },
       ],
       savingThrowNotes: [{ text: 'Advantage on saving throws to avoid or end the Poisoned condition.', source: 'Dwarven Resilience' }],
-      defenses: { resistances: [{ damageType: 'poison', source: 'Dwarven Resilience' }, { damageType: 'acid', source: 'Draconic Ancestry' }] },
+      defenses: { resistances: [{ damageType: 'poison', source: 'Dwarven Resilience' }, { damageType: 'acid', source: 'Draconic Ancestry' }], immunities: [{ condition: 'Poisoned', source: "Nature's Ward" }] },
     };
     renderCharacterSheet(rendered.root, sheet, {
       characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'abilities',
@@ -642,17 +669,23 @@ describe('read-only character sheet renderer', () => {
     expect(rendered.text).not.toContain('Not implemented yet');
   });
 
-  it('deduplicates overlapping section and global warnings, including missing sections', () => {
+  it('shows global source warnings once on the overview and keeps section warnings local', () => {
     const rendered = createSheetTestRoot();
     const sheet = structuredClone(completeSheet);
-    sheet.features = { groups: [{ category: 'class', label: 'Class features', entries: [] }], warnings: ['Same warning'] };
-    sheet.warnings = ['Same warning'];
-    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'features-and-traits', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
-    expect(rendered.text.filter((value) => value === 'Same warning')).toHaveLength(1);
+    sheet.warnings = ['Source warning'];
+    sheet.inventory.warnings = ['Inventory warning'];
+    renderCharacterSheet(rendered.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'inventory', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+    expect(rendered.text).not.toContain('Source warning');
+    expect(rendered.text.filter((value) => value === 'Inventory warning')).toHaveLength(1);
+
+    const overview = createSheetTestRoot();
+    renderCharacterSheet(overview.root, sheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'abilities', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
+    expect(overview.text.filter((value) => value === 'Source warning')).toHaveLength(1);
     const missingView = createSheetTestRoot();
     const missingSheet = structuredClone(completeSheet); delete missingSheet.actions; missingSheet.warnings = ['Missing warning'];
     renderCharacterSheet(missingView.root, missingSheet, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: 'actions', onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
-    expect(missingView.text).toEqual(expect.arrayContaining(['Actions: Action sources are unavailable.', 'Missing warning']));
+    expect(missingView.text).toContain('Actions: Action sources are unavailable.');
+    expect(missingView.text).not.toContain('Missing warning');
 
     const cases: Array<['spells' | 'features-and-traits' | 'actions' | 'background', string, (sheet: CharacterSheetProjection) => void]> = [
       ['spells', 'Spell warning', (value) => { value.spells = { kind: 'empty', reason: 'No spellcasting progression is available.', castingAbility: missing('No ability.'), spellModifier: missing('No modifier.'), spellAttack: missing('No attack.'), saveDc: missing('No DC.'), cantrips: [], levels: [], unresolvedSpells: [], freeUses: [], warnings: ['Spell warning'] }; }],
@@ -661,9 +694,10 @@ describe('read-only character sheet renderer', () => {
       ['background', 'Background warning', (value) => { delete value.backgroundDetails; }],
     ];
     for (const [section, warning, configure] of cases) {
-      const view = createSheetTestRoot(); const value = structuredClone(completeSheet); configure(value); value.warnings = [warning];
+      const view = createSheetTestRoot(); const value = structuredClone(completeSheet); configure(value); value.warnings = ['Global source warning'];
       renderCharacterSheet(view.root, value, { characters: [{ filePath: 'Characters/ayla.json', name: 'Ayla' }], selectedFilePath: 'Characters/ayla.json', selectedSection: section, onSelectCharacter: vi.fn(), onEdit: vi.fn(), onSectionChange: vi.fn() });
-      expect(view.text.filter((entry) => entry === warning)).toHaveLength(1);
+      expect(view.text).not.toContain('Global source warning');
+      if (section === 'spells') expect(view.text.filter((entry) => entry === warning)).toHaveLength(1);
       expect(view.text).not.toContain('Not implemented yet');
     }
   });
@@ -672,6 +706,7 @@ describe('read-only character sheet renderer', () => {
 interface TestControl {
   tag: string;
   ariaLabel: string;
+  title?: string;
   type: string;
   text: string;
   value: string;
@@ -719,13 +754,17 @@ function createSheetTestRoot(): {
       createSpan: (child?: TestOptions) => createNode('span', child),
       createEl: (childTag: string, child?: TestOptions) => createNode(childTag, child),
       addEventListener: (event: string, handler: () => void) => handlers.set(event, handler),
-      setAttribute: (name: string, value: string) => { if (name === 'aria-label') ariaLabels.push(value); },
+      setAttribute: (name: string, value: string) => {
+        if (name === 'aria-label') ariaLabels.push(value);
+        if (name === 'title') node.title = value;
+      },
       classList: { add: (...values: string[]) => classes.push(...values) },
     };
     if (tag === 'select' || tag === 'button' || tag === 'input') {
       const control = node as unknown as TestControl;
       control.tag = tag;
       control.ariaLabel = options?.attr?.['aria-label'] ?? '';
+      control.title = options?.attr?.title;
       control.type = options?.attr?.type ?? '';
       control.type = options?.attr?.type ?? '';
       control.text = options?.text ?? options?.attr?.['aria-label'] ?? '';

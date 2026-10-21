@@ -66,6 +66,19 @@ export class CharacterStore {
     return updated;
   }
 
+  async updateIfUnchanged(file: TFile, expected: CharacterDocument, update: (current: CharacterDocument) => CharacterDocument): Promise<CharacterDocument> {
+    let updated: CharacterDocument | undefined;
+    await this.vault.process(file, (data) => {
+      let current: CharacterDocument;
+      try { current = parseCharacterDocument(JSON.parse(data) as unknown); } catch { throw new Error(`Invalid character JSON in ${file.path}`); }
+      if (!sameDocument(current, expected)) throw new Error(`Character changed externally in ${file.path}`);
+      updated = parseCharacterDocument(update(current));
+      return serialize(updated);
+    });
+    if (updated === undefined) throw new Error(`Character update did not complete for ${file.path}`);
+    return updated;
+  }
+
   private async ensureFolder(): Promise<void> {
     if (this.vault.getFolderByPath?.(this.folder) === null || this.vault.getFolderByPath === undefined) await this.vault.createFolder(this.folder);
   }
@@ -78,3 +91,4 @@ function validateFolder(folder: string): string {
 }
 
 function serialize(document: CharacterDocument): string { return `${JSON.stringify(document, null, 2)}\n`; }
+function sameDocument(left: CharacterDocument, right: CharacterDocument): boolean { return JSON.stringify(left) === JSON.stringify(right); }

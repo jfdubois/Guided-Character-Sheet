@@ -500,7 +500,14 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const reference = records.get(`Compendium.dnd5e.${ruleset === '2014' ? 'classes' : 'classes24'}.Item.${value._id}`);
       if (!reference) throw new Error(`Class source record not found: ${sourcePath}`);
       const classIdentifier = typeof system.identifier === 'string' ? system.identifier : undefined;
-      const subclassDependencies = classIdentifier === undefined ? [] : await getSubclassDependencies(ruleset, classIdentifier);
+      const subclassDependencies = classIdentifier === undefined ? [] : await getSubclassDependencies(ruleset, classIdentifier, sourcePath);
+      const scopedClassPack = (context: string): { pack: string; directory: string } | undefined => {
+        if (ruleset !== '2024') return undefined;
+        const prefix = 'packs/_source/classes24/';
+        const separator = context.lastIndexOf('/');
+        if (!context.startsWith(prefix) || separator < prefix.length) return undefined;
+        return { pack: 'classes24', directory: context.slice(prefix.length, separator) };
+      };
       const rawAdvancement = system.advancement;
       const entries = rawAdvancement === undefined ? [] : Array.isArray(rawAdvancement)
         ? rawAdvancement
@@ -519,7 +526,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
           const spellMetadata = readClassSpellAdvancementMetadata(configuration, system);
           let dependencies = spellMetadata?.valid === true && spellPoolValues(configuration).length === 0
             ? (await catalog.searchSpells({ ruleset, level: spellMetadata.spellLevel, spellLists: spellMetadata.spellLists })).map((spell) => ({ uuid: `Compendium.${spell.pack}.Item.${spell.id}`, source: spell, ...(spell.description === undefined ? {} : { description: spell.description }) }))
-            : await catalog.resolveDependencies(configuration, ruleset);
+            : await catalog.resolveDependencies(configuration, ruleset, scopedClassPack(context));
           if (spellMetadata?.valid === true && spellPoolValues(configuration).length > 0) {
             const spellsByReference = new Map((await catalog.listSpells(ruleset)).map((spell) => [sourceReferenceKey(spell), spell]));
             dependencies = dependencies.map((dependency) => {
@@ -555,7 +562,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
           ? subclassDependencies
           : spellMetadata?.valid === true && spellPoolValues(configuration).length === 0
             ? (await catalog.searchSpells({ ruleset, level: spellMetadata.spellLevel, spellLists: spellMetadata.spellLists })).map((spell) => ({ uuid: `Compendium.${spell.pack}.Item.${spell.id}`, source: spell, ...(spell.description === undefined ? {} : { description: spell.description }) }))
-            : await catalog.resolveDependencies(configuration, ruleset);
+            : await catalog.resolveDependencies(configuration, ruleset, scopedClassPack(sourcePath));
         if (spellMetadata?.valid === true && spellPoolValues(configuration).length > 0) {
           const spellsByReference = new Map((await catalog.listSpells(ruleset)).map((spell) => [sourceReferenceKey(spell), spell]));
           dependencies = dependencies.map((dependency) => {
@@ -599,7 +606,7 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
       const configuredSpellLists = stringValues(spellcasting?.spellLists);
       const spellLists = configuredSpellLists.length > 0 ? configuredSpellLists : classIdentifier === undefined ? [] : [classIdentifier];
       const spellOptions = ruleset === '2024' && spellcasting !== undefined && spellLists.length > 0
-        ? (await Promise.all([0, 1].map((level) => catalog.searchSpells({ ruleset, level, spellLists })))).flat()
+        ? (await catalog.listSpells(ruleset)).filter((spell) => spell.level >= 0 && spell.level <= 9 && spell.spellLists.some((list) => spellLists.some((allowed) => allowed.toLocaleLowerCase() === list.toLocaleLowerCase())))
         : [];
       return { source: reference, ruleset, ...(isRecord(system.description) && typeof system.description.value === 'string' ? { description: toPlainText(system.description.value), overviewHtml: system.description.value } : {}), hitDie, ...(isRecord(system.primaryAbility) ? { primaryAbility: system.primaryAbility } : {}), ...(spellcasting === undefined ? {} : { spellcasting }), ...(spellOptions.length > 0 ? { spellOptions } : {}), proficiencies: extractClassProficiencies(primaryLevelOneAdvancements), features: extractClassFeatures(primaryClassAdvancements, sourceRecords), scales: extractClassScales(primaryClassAdvancements), advancements, ...(startingEquipment === undefined ? {} : { startingEquipment }) };
     },
@@ -700,16 +707,23 @@ export function createSourceIndex(adapter: SourceReaderAdapter, sourceRoot: stri
     async resolveSelector(selector, ruleset) { return catalog.resolveSelector(selector, ruleset); },
   };
 
-  async function getSubclassDependencies(ruleset: CharacterRuleset, classIdentifier: string): Promise<ResolvedSourceDependency[]> {
-    const subclasses = await catalog.listPack('subclasses');
+  async function getSubclassDependencies(ruleset: CharacterRuleset, classIdentifier: string, classSourcePath: string): Promise<ResolvedSourceDependency[]> {
+    const pack = ruleset === '2014' ? 'subclasses' : 'classes24';
+    const packPrefix = `packs/_source/${pack}/`;
+    const fileSeparator = classSourcePath.lastIndexOf('/');
+    const directory = ruleset === '2024' && classSourcePath.startsWith(packPrefix) && fileSeparator >= packPrefix.length
+      ? classSourcePath.slice(packPrefix.length, fileSeparator)
+      : undefined;
+    if (ruleset === '2024' && directory === undefined) throw new Error(`Unsupported 2024 class source path: ${classSourcePath}`);
+    const subclasses = await catalog.listPack(pack, directory);
     return subclasses.filter((record) => {
       const system = isRecord(record.raw.system) ? record.raw.system : {};
-      return isRecord(system.source) && String(system.source.rules) === ruleset && system.classIdentifier === classIdentifier;
+      return record.type === 'subclass' && isRecord(system.source) && String(system.source.rules) === ruleset && system.classIdentifier === classIdentifier;
     }).map((record) => {
       const raw = catalog.getRaw(record.sourcePath);
       const system = raw && isRecord(raw.system) ? raw.system : undefined;
       const description = system && isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value, system) : undefined;
-      return { uuid: `Compendium.${record.pack}.Item.${record.id}`, source: record, ...(description === undefined ? {} : { description }) };
+      return { uuid: `Compendium.${record.pack}.Item.${record.id}`, source: toReference(record), ...(description === undefined ? {} : { description }) };
     });
   }
 }

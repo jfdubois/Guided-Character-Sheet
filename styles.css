@@ -134,31 +134,6 @@
   margin-bottom: 0;
 }
 
-.guided-character-sheet__derived-summary,
-.guided-character-sheet__mutable-summary {
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  margin: var(--size-4-3) 0;
-  padding: var(--size-4-3);
-}
-
-.guided-character-sheet__derived-summary h4,
-.guided-character-sheet__mutable-summary h4,
-.guided-character-sheet__mutable-summary h5 {
-  margin-top: 0;
-}
-
-.guided-character-sheet__derived-summary ul,
-.guided-character-sheet__mutable-summary ul {
-  margin-bottom: 0;
-}
-
-.guided-character-sheet__mutable-summary {
-  background: var(--background-primary);
-  margin-bottom: 0;
-}
-
 .guided-character-sheet__selected-choice {
   font-size: var(--font-ui-large);
   font-weight: var(--font-semibold);
@@ -261,6 +236,60 @@
 .guided-character-sheet__traits h4,
 .guided-character-sheet__features-heading {
   margin-bottom: var(--size-4-2);
+}
+
+.guided-character-sheet__level-cards {
+  display: grid;
+  gap: var(--size-4-3);
+}
+
+.guided-character-sheet__class-tabs {
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: var(--size-4-3);
+}
+
+.guided-character-sheet__class-tab {
+  border-bottom: 2px solid var(--interactive-accent);
+  border-radius: var(--radius-s) var(--radius-s) 0 0;
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.guided-character-sheet__level-selector {
+  max-width: 12rem;
+}
+
+.guided-character-sheet__level-section > summary {
+  font-weight: var(--font-semibold);
+}
+
+.guided-character-sheet__level-card-controls {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.guided-character-sheet__level-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-3);
+}
+
+.guided-character-sheet__level-card h5,
+.guided-character-sheet__level-card-choice h6 {
+  margin: 0 0 var(--size-4-2);
+}
+
+.guided-character-sheet__level-card-description {
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-3);
+}
+
+.guided-character-sheet__level-card-choice + .guided-character-sheet__level-card-choice {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: var(--size-4-3);
+  padding-top: var(--size-4-3);
 }
 
 .guided-character-sheet__traits dl {
@@ -513,6 +542,49 @@
 .guided-character-sheet__ability-card .guided-character-sheet__sheet-value {
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
+}
+
+.guided-character-sheet__speed-value {
+  align-items: center;
+  display: flex;
+  gap: var(--size-4-1);
+  justify-content: center;
+}
+
+.guided-character-sheet__speed-details {
+  color: var(--text-muted);
+  cursor: help;
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  list-style: none;
+}
+
+.guided-character-sheet__speed-disclosure {
+  position: relative;
+}
+
+.guided-character-sheet__speed-details::-webkit-details-marker {
+  display: none;
+}
+
+.guided-character-sheet__speed-disclosure-content {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+  left: 0;
+  padding: var(--size-4-1);
+  position: absolute;
+  text-align: left;
+  top: 100%;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.guided-character-sheet__speed-disclosure:not([open]) .guided-character-sheet__speed-disclosure-content {
+  display: none;
 }
 
 .guided-character-sheet__hit-points-control {
@@ -917,3 +989,7 @@
 .guided-character-sheet__manage-spells-empty { color: var(--text-muted); font-size: var(--font-ui-smaller); }
 .guided-character-sheet__manage-spells-description { color: var(--text-muted); line-height: var(--line-height-normal); }
 .guided-character-sheet__manage-spells-actions { display: flex; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-2); }
+
+.guided-character-sheet__reset-actions { display: flex; justify-content: flex-end; gap: var(--size-4-2); margin-top: var(--size-4-4); }
+.guided-character-sheet__edit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--size-4-2); margin-block: var(--size-4-3); }
+.guided-character-sheet__edit-actions .guided-character-sheet__hint { flex-basis: 100%; }

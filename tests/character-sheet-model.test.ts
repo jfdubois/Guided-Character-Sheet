@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AbilityScoreSelection } from '../src/ability-scores';
 import { projectCharacterSheet } from '../src/character-sheet-model';
+import { buildClassConfiguration, setClassSelection, toClassProgressionSelection } from '../src/class-configuration';
 import type { CharacterDocument } from '../src/character-model';
 import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from '../src/character-sources';
 import type { FoundryItemSummary, FoundrySourceReference } from '../src/foundry-source-catalog';
 import { createPinnedSourceIndex } from './support/pinned-foundry-source';
+import { getEligibleClassFeatures } from '../src/class-feature-eligibility';
+import { draconicSorceryHitPointsPerLevel } from '../src/passive-effects';
 
 const abilityScores: AbilityScoreSelection = {
   method: 'standard-array',
@@ -68,6 +71,106 @@ const soldier: BackgroundSourceSummary = {
 };
 
 describe('character sheet projection', () => {
+  it('projects the pinned level-three 2024 Thief climbing speed and keeps subclass selections reference-only', async () => {
+    const index = createPinnedSourceIndex();
+    const rogue = await index.getClassSummary('2024', 'packs/_source/classes24/rogue/rogue.yml');
+    const pinnedSpecies = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/elf-high.yml');
+    const config = buildClassConfiguration(rogue, { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' }, 3);
+    const subclassChoice = config.selections.find((choice) => choice.kind === 'subclass');
+    if (subclassChoice?.kind !== 'subclass') throw new Error('Pinned Rogue subclass choice was unavailable');
+    const thief = subclassChoice.options.find((option) => option.name === 'Thief');
+    if (thief === undefined) throw new Error('Pinned Thief subclass was unavailable');
+    const selected = setClassSelection(config, { ...subclassChoice, selected: thief });
+    const progression = toClassProgressionSelection(selected);
+    const thiefSelection = progression.selections.find((selection) => selection.kind === 'subclass');
+    expect(progression.subclass).not.toHaveProperty('raw');
+    expect(thiefSelection?.kind === 'subclass' ? thiefSelection.selected : undefined).not.toHaveProperty('raw');
+
+    const rogueDocument = structuredClone(document);
+    rogueDocument.origin = { sourcePath: pinnedSpecies.source.sourcePath, identifier: pinnedSpecies.source.identifier ?? 'elf', id: pinnedSpecies.source.id };
+    rogueDocument.classProgressions = [progression];
+    const sheet = projectCharacterSheet(rogueDocument, { species: pinnedSpecies, class: rogue, warnings: [] });
+
+    expect(sheet.header.speed).toEqual({ kind: 'available', value: '30' });
+    expect(sheet.header.speedDetails).toEqual({ kind: 'available', value: 'Walking: 30; Climb: 30' });
+    expect(sheet.warnings.filter((warning) => warning.includes('movement.climb'))).toEqual([]);
+    expect(sheet.features?.groups.flatMap((group) => group.entries).some((entry) => entry.name === 'Second-Story Work')).toBe(true);
+  }, 15000);
+
+  it('keeps pinned conditional Ranger Roving movement in feature text without reporting unsupported movement keys', async () => {
+    const index = createPinnedSourceIndex();
+    const ranger = await index.getClassSummary('2024', 'packs/_source/classes24/ranger/ranger.yml');
+    const pinnedSpecies = await index.getSpeciesSummary('2024', 'packs/_source/origins24/species/elf-high.yml');
+    const rangerDocument = structuredClone(document);
+    rangerDocument.origin = { sourcePath: pinnedSpecies.source.sourcePath, identifier: pinnedSpecies.source.identifier ?? 'elf', id: pinnedSpecies.source.id };
+    rangerDocument.classProgressions = [{ class: { sourcePath: ranger.source.sourcePath, identifier: ranger.source.identifier ?? 'ranger', id: ranger.source.id }, targetLevel: 6, selections: [] }];
+
+    const sheet = projectCharacterSheet(rangerDocument, { species: pinnedSpecies, class: ranger, warnings: [] });
+    const roving = sheet.features?.groups.flatMap((group) => group.entries).find((entry) => entry.name === 'Roving');
+
+    expect(sheet.header.speed).toEqual({ kind: 'available', value: '30' });
+    expect(sheet.warnings.filter((warning) => warning.includes('movement.'))).toEqual([]);
+    expect(roving?.description).toMatchObject({ kind: 'available', value: expect.stringContaining('Climb Speed') });
+    expect(roving?.description.kind === 'available' ? roving.description.value : '').toContain('Heavy armor');
+  }, 15000);
+
+  it('projects pinned level-gated Feral Senses as 30-foot blindsight', async () => {
+    const ranger = await createPinnedSourceIndex().getClassSummary('2024', 'packs/_source/classes24/ranger/ranger.yml');
+    const feralSource = { sourcePath: 'packs/_source/classes24/ranger/class-features/feral-senses.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'phbrgrFeralSense', name: 'Feral Senses' };
+    const feral = { ...ranger, features: [...(ranger.features ?? []), { advancementId: 'feral-senses', level: 18, source: feralSource, activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.attributes.senses.blindsight', type: 'upgrade', value: 30 }] } }] }] };
+    const rangerDocument = structuredClone(document);
+    rangerDocument.classProgressions = [{ class: { sourcePath: ranger.source.sourcePath, identifier: 'ranger', id: ranger.source.id }, targetLevel: 18, selections: [] }];
+    const sheet = projectCharacterSheet(rangerDocument, { species, class: feral, warnings: [] });
+    expect(sheet.senses.find(({ label }) => label === 'Blindsight')?.value).toEqual({ kind: 'available', value: '30 ft.' });
+    expect(sheet.warnings.filter((warning) => warning.includes('senses.blindsight'))).toEqual([]);
+  }, 15000);
+
+  it('reads the finalized Draconic Resilience maximum and preserves an explicit maximum override', () => {
+    const draconicSource = { sourcePath: 'packs/_source/classes24/sorcerer/subclass-features/draconic-sorcery/draconic-resilience.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'phbscrDraconicRe', name: 'Draconic Resilience' };
+    const sorcerer: ClassSourceSummary = { ...fighter, source: { ...fighter.source, sourcePath: 'packs/_source/classes24/sorcerer/sorcerer.yml', identifier: 'sorcerer', name: 'Sorcerer' }, features: [{ advancementId: 'draconic-resilience', level: 3, source: draconicSource, activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.attributes.hp.bonuses.overall', type: 'add', value: '@classes.sorcerer.levels' }] } }, { disabled: false, transfer: true, system: { changes: [{ key: 'system.attributes.ac.calc', type: 'override', value: 'unarmoredBard' }] } }] }] };
+    const sorcererDocument = structuredClone(document);
+    sorcererDocument.classProgressions = [{ class: { sourcePath: sorcerer.source.sourcePath, identifier: 'sorcerer', id: sorcerer.source.id }, targetLevel: 3, selections: [] }];
+    sorcererDocument.mutable = { preparedSpells: [], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [], resources: [], hitPoints: { current: 30, maximum: 33 } };
+    const sheet = projectCharacterSheet(sorcererDocument, { species, class: sorcerer, background: soldier, warnings: [] });
+    expect(sheet.header.hitPoints).toEqual({ kind: 'available', value: { current: 30, maximum: 33, temporary: 0 } });
+    expect(sheet.header.armorClass).toEqual({ kind: 'available', value: 11 });
+    sorcererDocument.mutable.hitPoints!.maximumOverride = 35;
+    expect(projectCharacterSheet(sorcererDocument, { species, class: sorcerer, background: soldier, warnings: [] }).header.hitPoints).toEqual({ kind: 'available', value: { current: 30, maximum: 35, temporary: 0 } });
+  });
+
+  it('grants the pinned Draconic HP modifier only after selecting Draconic Sorcery at an eligible level', async () => {
+    const index = createPinnedSourceIndex();
+    const sorcerer = await index.getClassSummary('2024', 'packs/_source/classes24/sorcerer/sorcerer.yml');
+    const snapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' };
+    const config = buildClassConfiguration(sorcerer, snapshot, 3);
+    const choice = config.selections.find((selection) => selection.kind === 'subclass');
+    if (choice?.kind !== 'subclass') throw new Error('Pinned Sorcerer subclass choice was unavailable');
+    const draconic = choice.options.find((option) => option.name === 'Draconic Sorcery');
+    if (draconic === undefined) throw new Error('Pinned Draconic Sorcery option was unavailable');
+    const selected = (option: typeof draconic) => toClassProgressionSelection(setClassSelection(config, { ...choice, selected: option }));
+    const draconicDocument = structuredClone(document);
+    draconicDocument.classProgressions = [selected(draconic)];
+    const otherDocument = structuredClone(draconicDocument);
+    const otherSelection = otherDocument.classProgressions![0]!.selections.find((selection) => selection.kind === 'subclass');
+    if (otherSelection?.kind === 'subclass') otherSelection.selected = { sourcePath: 'packs/_source/classes24/sorcerer/wild-magic.yml', pack: 'dnd5e.classes24', type: 'subclass', id: 'wild-magic', name: 'Wild Magic' };
+    const noSubclassDocument = structuredClone(document);
+    noSubclassDocument.classProgressions = [{ ...selected(draconic), selections: selected(draconic).selections.filter((selection) => selection.kind !== 'subclass') }];
+    const sources = [{ source: sorcerer.source, effects: [] }, ...getEligibleClassFeatures(draconicDocument, sorcerer).map((feature) => ({ source: feature.source, effects: feature.activeEffects ?? [] }))];
+    expect(draconicSorceryHitPointsPerLevel(sources, '2024')).toBe(1);
+    expect(draconicSorceryHitPointsPerLevel(getEligibleClassFeatures(otherDocument, sorcerer).map((feature) => ({ source: feature.source, effects: feature.activeEffects ?? [] })), '2024')).toBe(0);
+    expect(draconicSorceryHitPointsPerLevel(getEligibleClassFeatures(noSubclassDocument, sorcerer).map((feature) => ({ source: feature.source, effects: feature.activeEffects ?? [] })), '2024')).toBe(0);
+  }, 15000);
+
+  it('projects pinned Nature’s Ward poison immunity as a condition defense', () => {
+    const wardSource = { sourcePath: 'packs/_source/classes24/druid/subclass-features/circle-of-land/natures-ward.yml', pack: 'dnd5e.classes24', type: 'feat', id: 'phbdrdNaturesWar', name: "Nature's Ward" };
+    const druid: ClassSourceSummary = { ...fighter, source: { ...fighter.source, sourcePath: 'packs/_source/classes24/druid/druid.yml', identifier: 'druid', name: 'Druid' }, features: [{ advancementId: 'natures-ward', level: 10, source: wardSource, activeEffects: [{ disabled: false, transfer: true, system: { changes: [{ key: 'system.traits.ci.value', type: 'add', value: 'poison' }] } }] }] };
+    const druidDocument = structuredClone(document);
+    druidDocument.classProgressions = [{ class: { sourcePath: druid.source.sourcePath, identifier: 'druid', id: druid.source.id }, targetLevel: 10, selections: [] }];
+    const sheet = projectCharacterSheet(druidDocument, { species, class: druid, warnings: [] });
+    expect(sheet.defenses?.immunities).toEqual([{ condition: 'Poisoned', source: "Nature's Ward" }]);
+    expect(sheet.warnings.filter((warning) => warning.includes('traits.ci.value'))).toEqual([]);
+  });
+
   it('projects pinned Criminal Alert as full Initiative proficiency and removes it with the grant', async () => {
     const pinnedBackground = await createPinnedSourceIndex().getBackgroundSummary('2024', 'packs/_source/origins24/backgrounds/criminal.yml');
     const criminalDocument = structuredClone(document);
@@ -130,6 +233,41 @@ describe('character sheet projection', () => {
     expect(withoutAlert.header.initiative).toEqual({ kind: 'available', value: 2 });
   });
 
+  it('projects pinned all-save proficiency, half proficiency on untrained skills, and systematic advantage', () => {
+    const effect = (key: string, type: string, value: unknown): Record<string, unknown>[] => [{ disabled: false, transfer: true, system: { changes: [{ key, type, value }] } }];
+    const feature = (path: string, pack: string, id: string, name: string, level: number, effects: Record<string, unknown>[]) => ({
+      advancementId: `synthetic-${id}`, source: { sourcePath: `packs/_source/${path}`, pack, type: 'feat', id, name }, level, activeEffects: effects,
+    });
+    const phase3Fighter = {
+      ...fighter,
+      features: [
+        feature('classes24/monk/class-features/disciplined-survivor.yml', 'dnd5e.classes24', 'phbmnkDiscipline', 'Disciplined Survivor', 14, effect('flags.dnd5e.diamondSoul', 'override', true)),
+        feature('classes24/bard/class-features/jack-of-all-trades.yml', 'dnd5e.classes24', 'phbbrdJackOfAllT', 'Jack of All Trades', 2, effect('flags.dnd5e.jackOfAllTrades', 'override', true)),
+        feature('classes24/barbarian/class-features/feral-instinct.yml', 'dnd5e.classes24', 'phbbrbFeralInsti', 'Feral Instinct', 7, effect('system.attributes.init.roll.mode', 'add', 1)),
+        feature('classes24/fighter/subclass-features/champion/remarkable-athlete.yml', 'dnd5e.classes24', 'phbftrRemarkable', 'Remarkable Athlete', 3, effect('flags.dnd5e.remarkableAthlete', 'override', true)),
+      ],
+    };
+    const levelFourteen = structuredClone(document);
+    levelFourteen.classProgressions![0]!.targetLevel = 14;
+    const sheet = projectCharacterSheet(levelFourteen, { species, class: phase3Fighter, background: soldier, warnings: [] });
+
+    expect(sheet.savingThrows.every((save) => save.proficient.kind === 'available' && save.proficient.value)).toBe(true);
+    expect(sheet.savingThrows.find(({ ability }) => ability === 'wis')?.modifier).toEqual({ kind: 'available', value: 5 });
+    expect(sheet.skills.find(({ key }) => key === 'arc')?.modifier).toEqual({ kind: 'available', value: 3 });
+    expect(sheet.skills.find(({ key }) => key === 'ath')?.modifier).toEqual({ kind: 'available', value: 8 });
+    expect(sheet.skills.find(({ key }) => key === 'ath')?.annotations).toEqual([{ marker: 'A', source: 'Remarkable Athlete' }]);
+    expect(sheet.header.initiative).toEqual({ kind: 'available', value: 4 });
+    expect(sheet.header.initiativeAnnotations).toEqual([{ marker: 'A', source: 'Feral Instinct, Remarkable Athlete' }]);
+    expect(sheet.warnings).toEqual([]);
+
+    const jackOnly = projectCharacterSheet(levelFourteen, { species, class: { ...phase3Fighter, features: phase3Fighter.features.filter((entry) => entry.source.id === 'phbbrdJackOfAllT') }, background: soldier, warnings: [] });
+    expect(jackOnly.header.initiative).toEqual({ kind: 'available', value: 4 });
+
+    const alertBackground = { ...soldier, grantedFeats: [{ source: sourceRef('Alert'), advancements: [], activeEffects: effect('flags.dnd5e.initiativeAlert', 'add', true) }] };
+    const jackWithAlert = projectCharacterSheet(levelFourteen, { species, class: { ...phase3Fighter, features: phase3Fighter.features.filter((entry) => entry.source.id === 'phbbrdJackOfAllT') }, background: alertBackground, warnings: [] });
+    expect(jackWithAlert.header.initiative).toEqual({ kind: 'available', value: 7 });
+  });
+
   it('deduplicates weapon proficiency labels represented by different selectors', () => {
     const sheet = projectCharacterSheet(document, {
       species,
@@ -161,7 +299,7 @@ describe('character sheet projection', () => {
     });
 
     expect(sheet.identity.creatureType).toEqual({ kind: 'available', value: 'Humanoid' });
-    expect(sheet.defenses).toEqual({ resistances: [] });
+    expect(sheet.defenses).toEqual({ resistances: [], immunities: [] });
   });
 
   it('shows concrete tool selections and omits category or wildcard selectors', () => {
@@ -406,7 +544,7 @@ describe('character sheet projection', () => {
     expect(sheet.defenses).toEqual({ resistances: [
       { damageType: 'poison', source: 'Dwarven Resilience' },
       { damageType: 'acid', source: 'Draconic Ancestry' },
-    ] });
+    ], immunities: [] });
     expect(sheet.savingThrows.find(({ ability }) => ability === 'int')?.annotations).toEqual([
       { marker: 'A', source: 'Gnomish Cunning' },
       { marker: 'D', source: 'Test condition' },

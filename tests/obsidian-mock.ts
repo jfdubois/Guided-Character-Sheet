@@ -1,8 +1,12 @@
+import { vi } from 'vitest';
+
 export function normalizePath(path: string): string {
   return path.replaceAll('\\', '/');
 }
 
 export function setIcon(_parent: HTMLElement, _iconId: string): void {}
+
+export const setTooltip = vi.fn((_el: HTMLElement, _tooltip: string): void => {});
 
 export function sanitizeHTMLToDom(_html: string): DocumentFragment {
   return { childNodes: [] } as unknown as DocumentFragment;

@@ -21,6 +21,36 @@ describe('class configuration', () => {
     expect(result.every((choice) => choice.kind === 'spell')).toBe(true);
   });
 
+  it('validates a level-three second-level spell from a structured class choice', () => {
+    const arcaneLock = { ...ref('arcane-lock', 'spells24', 'Arcane Lock'), type: 'spell' as const, level: 2, spellLists: ['wizard'] };
+    const classSummary = {
+      ...summary([{ id: 'level-three-spells', type: 'ItemChoice', level: 3, title: 'New spells', hint: '', spellLevel: 2, spellLists: ['wizard'], dependencies: [{ uuid: 'arcane-lock', source: arcaneLock }], raw: { configuration: { type: 'spell', choices: 1, pool: ['arcane-lock'], restriction: { level: 2, list: ['class:wizard'] } } } }]),
+      spellcasting: { progression: 'full', ability: 'int', spellLists: ['wizard'] },
+    } as ClassSourceSummary;
+    const configuration = buildClassConfiguration(classSummary, snapshot, 3);
+    const choice = configuration.choices.find((entry): entry is Extract<ClassAdvancementSelection, { kind: 'spell' }> => entry.kind === 'spell' && entry.advancementId === 'level-three-spells');
+    expect(choice).toBeDefined();
+    expect(() => setClassSelection(configuration, { ...choice!, selected: [arcaneLock] })).not.toThrow();
+  });
+
+  it('limits structured higher-level known-spell choices to the projected slot ceiling', () => {
+    const first = { ...ref('shield', 'spells24', 'Shield'), type: 'spell' as const, level: 1, spellLists: ['wizard'] };
+    const second = { ...ref('arcane-lock', 'spells24', 'Arcane Lock'), type: 'spell' as const, level: 2, spellLists: ['wizard'] };
+    const third = { ...ref('fireball', 'spells24', 'Fireball'), type: 'spell' as const, level: 3, spellLists: ['wizard'] };
+    const classSummary = {
+      ...summary([]),
+      spellcasting: { progression: 'full', ability: 'int', spellLists: ['wizard'] },
+      scales: [{ advancementId: 'known', title: 'Spells Known', identifier: 'spells-known', level: 1, values: new Map([[1, { type: 'number' as const, value: 3 }], [3, { type: 'number' as const, value: 5 }]]), diagnostics: [] }],
+      spellOptions: [first, second, third],
+    } as ClassSourceSummary;
+    const configuration = buildClassConfiguration(classSummary, snapshot, 3);
+    const choice = configuration.choices.find((entry): entry is Extract<ClassAdvancementSelection, { kind: 'spell' }> => entry.kind === 'spell' && entry.selectionRole === 'known-spells');
+    expect(choice).toMatchObject({ level: -1, maxLevel: 2, count: 5 });
+    expect(choice?.kind === 'spell' ? choice.options?.map((option) => option.source.id) : []).toEqual(['shield', 'arcane-lock']);
+    expect(() => setClassSelection(configuration, { ...choice!, selected: [second] })).not.toThrow();
+    expect(() => setClassSelection(configuration, { ...choice!, selected: [third] })).toThrow(/level/);
+  });
+
   it('validates derived spell level and class list and restores valid selections', () => {
     const wizardCantrip = { ...ref('light', 'spells', 'Light'), type: 'spell' as const, level: 0, spellLists: ['wizard'] };
     const bardSpell = { ...ref('charm', 'spells', 'Charm Person'), type: 'spell' as const, level: 1, spellLists: ['bard'] };

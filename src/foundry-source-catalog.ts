@@ -79,6 +79,7 @@ export interface ItemSearchFilters {
 export interface SpellSearchFilters {
   ruleset: CharacterRuleset;
   level?: number;
+  maxLevel?: number;
   spellLists?: string[];
   query?: string;
 }
@@ -105,13 +106,13 @@ const SPELL_LIST_REGISTRY_PATHS: Record<CharacterRuleset, string> = {
 
 export interface FoundrySourceCatalog {
   list(family: SourceFamily, ruleset: CharacterRuleset): Promise<FoundrySourceRecord[]>;
-  listPack(pack: string): Promise<FoundrySourceRecord[]>;
+  listPack(pack: string, directory?: string): Promise<FoundrySourceRecord[]>;
   get(family: SourceFamily, ruleset: CharacterRuleset, sourcePath: string): Promise<FoundrySourceRecord | null>;
   getByUuid(uuid: string): Promise<FoundrySourceReference | null>;
   getRaw(sourcePath: string): Record<string, unknown> | undefined;
   getRawRecord(sourcePath: string): Promise<Record<string, unknown> | undefined>;
   indexPack(pack: string): Promise<void>;
-  resolveDependencies(value: unknown, ruleset?: CharacterRuleset): Promise<ResolvedFoundryDependency[]>;
+  resolveDependencies(value: unknown, ruleset?: CharacterRuleset, scopedPack?: { pack: string; directory: string }): Promise<ResolvedFoundryDependency[]>;
   getItemSummary(ruleset: CharacterRuleset, sourcePath: string): Promise<FoundryItemSummary | null>;
   searchItems(query: string, filters?: ItemSearchFilters): Promise<FoundryItemSummary[]>;
   listSpells(ruleset: CharacterRuleset): Promise<FoundrySpellSummary[]>;
@@ -250,24 +251,29 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
     return sorted;
   }
 
-  async function indexPack(pack: string): Promise<void> {
-    if (indexedPacks.has(pack)) return;
+  async function indexPack(pack: string, directory?: string): Promise<void> {
+    const indexKey = directory === undefined ? pack : `${pack}/${directory}`;
+    if (indexedPacks.has(pack) || indexedPacks.has(indexKey)) return;
     const packRoot = `${root}/packs/_source/${pack}`;
     if (!(await adapter.exists(root))) throw new Error('Source files are not available. Download the Foundry sources first.');
-    if (!(await adapter.exists(packRoot))) { indexedPacks.add(pack); return; }
-    const paths = (await adapter.list(packRoot)).filter((candidate) => {
+    if (!(await adapter.exists(packRoot))) { indexedPacks.add(indexKey); return; }
+    if (directory !== undefined && (directory.startsWith('/') || directory.split('/').some((part) => part.length === 0 || part === '.' || part === '..' || part.includes('\\')))) throw new Error(`Invalid source pack directory: ${directory}`);
+    const scanRoot = directory === undefined ? packRoot : `${packRoot}/${directory}`;
+    if (!(await adapter.exists(scanRoot))) { indexedPacks.add(indexKey); return; }
+    const paths = (await adapter.list(scanRoot)).filter((candidate) => {
       const relative = relativePath(root, candidate);
       return relative !== undefined && relative.startsWith('packs/_source/') && relative.endsWith('.yml') && !relative.split('/').includes('_folder.yml');
     }).sort();
     await Promise.all(paths.map(async (path) => { try { await readRecord(path); } catch { /* malformed dependency records remain unresolved */ } }));
-    indexedPacks.add(pack);
+    indexedPacks.add(indexKey);
   }
 
   return {
     list,
-    async listPack(pack) {
-      await indexPack(pack);
-      return [...recordsByPath.values()].filter((record) => record.pack === `dnd5e.${pack}`);
+    async listPack(pack, directory) {
+      await indexPack(pack, directory);
+      const prefix = directory === undefined ? undefined : `packs/_source/${pack}/${directory}/`;
+      return [...recordsByPath.values()].filter((record) => record.pack === `dnd5e.${pack}` && (prefix === undefined || record.sourcePath.startsWith(prefix)));
     },
     async get(family, ruleset, sourcePath) {
       const record = recordsByPath.get(sourcePath);
@@ -294,7 +300,7 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
       return raw;
     },
     indexPack,
-    async resolveDependencies(value, ruleset) {
+    async resolveDependencies(value, ruleset, scopedPack) {
       const uuids = collectUuids(value);
       const result: ResolvedFoundryDependency[] = [];
       for (const uuid of uuids) {
@@ -305,8 +311,12 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
           for (const item of tools) result.push({ uuid, source: item, ...(item.description === undefined ? {} : { description: item.description }) });
           continue;
         }
-        if (parsed) await indexPack(parsed.pack);
-        const source = parsed ? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.Item.${parsed.id}`) ?? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.${parsed.id}`) ?? null : null;
+        if (parsed) await indexPack(parsed.pack, scopedPack?.pack === parsed.pack ? scopedPack.directory : undefined);
+        let source = parsed ? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.Item.${parsed.id}`) ?? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.${parsed.id}`) ?? null : null;
+        if (parsed && source === null && scopedPack?.pack === parsed.pack) {
+          await indexPack(parsed.pack);
+          source = recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.Item.${parsed.id}`) ?? recordsByUuid.get(`Compendium.dnd5e.${parsed.pack}.${parsed.id}`) ?? null;
+        }
         const raw = source === null ? undefined : recordsByPath.get(source.sourcePath)?.raw;
         const system = raw && isRecord(raw.system) ? raw.system : undefined;
         const description = system && isRecord(system.description) && typeof system.description.value === 'string' ? toPlainText(system.description.value) : undefined;
@@ -359,6 +369,7 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
       const allowedLists = new Set((filters.spellLists ?? []).map((list) => normalizeSpellList(list)));
       return spells
         .filter((spell) => filters.level === undefined || spell.level === filters.level)
+        .filter((spell) => filters.maxLevel === undefined || spell.level <= filters.maxLevel)
         .filter((spell) => allowedLists.size === 0 || spell.spellLists.some((list) => allowedLists.has(list)))
         .map((spell) => ({ spell, score: fuzzyScore(spell, normalizedQuery) }))
         .filter(({ score }) => score >= 0)

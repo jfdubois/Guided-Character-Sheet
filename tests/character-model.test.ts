@@ -44,6 +44,49 @@ function finalizedDocument(): CharacterDocument {
 }
 
 describe('character model', () => {
+  it('strips embedded upstream records from saved subclass references while parsing', () => {
+    const base = selected2024Background();
+    const rawSubclass = {
+      sourcePath: 'packs/_source/classes24/rogue/thief.yml', pack: 'dnd5e.classes24', type: 'subclass', id: 'thief', name: 'Thief',
+      raw: { upstream: 'synthetic regression sentinel' },
+    };
+    const progression = {
+      ...base.classProgressions![0]!,
+      subclass: rawSubclass,
+      selections: [{ advancementId: 'subclass', kind: 'subclass' as const, selected: rawSubclass, options: [rawSubclass] }],
+    };
+
+    const parsed = parseCharacterDocument({ ...base, classProgressions: [progression] });
+
+    expect(parsed.classProgressions?.[0]?.subclass).toEqual({ sourcePath: rawSubclass.sourcePath, pack: rawSubclass.pack, type: rawSubclass.type, id: rawSubclass.id, name: rawSubclass.name });
+    expect(parsed.classProgressions?.[0]?.selections[0]).toEqual({
+      advancementId: 'subclass', kind: 'subclass',
+      selected: { sourcePath: rawSubclass.sourcePath, pack: rawSubclass.pack, type: rawSubclass.type, id: rawSubclass.id, name: rawSubclass.name },
+      options: [{ sourcePath: rawSubclass.sourcePath, pack: rawSubclass.pack, type: rawSubclass.type, id: rawSubclass.id, name: rawSubclass.name }],
+    });
+  });
+
+  it('preserves a legacy higher-level HP maximum without inferring historical gains', () => {
+    const legacy = finalizedDocument();
+    legacy.classProgressions![0]!.targetLevel = 3;
+    legacy.mutable!.hitPoints = { current: 18, maximum: 42, maximumOverride: 45, temporary: 2 };
+
+    const parsed = parseCharacterDocument(JSON.parse(JSON.stringify(legacy)));
+
+    expect(parsed.classHitPoints).toBeUndefined();
+    expect(parsed.mutable?.hitPoints).toEqual({ current: 18, maximum: 42, maximumOverride: 45, temporary: 2 });
+  });
+
+  it('rejects a persisted class HP ledger that does not contain only the effective class levels', () => {
+    const document = { ...finalizedDocument(), classHitPoints: [
+      { classSourcePath: fighter24.sourcePath, level: 1, value: 'max' },
+      { classSourcePath: fighter24.sourcePath, level: 2, value: 'avg' },
+    ] };
+    expect(() => parseCharacterDocument(document)).toThrow('Invalid character document');
+    expect(() => parseCharacterDocument({ ...document, classProgressions: [{ ...document.classProgressions![0]!, targetLevel: 2 }], classHitPoints: [...document.classHitPoints, { classSourcePath: fighter24.sourcePath, level: 3, value: 4 }] })).toThrow('Invalid character document');
+    expect(() => parseCharacterDocument({ ...document, classHitPoints: [{ ...document.classHitPoints[0]!, classSourcePath: 'packs/_source/classes24/wizard/wizard.yml' }] })).toThrow('Invalid character document');
+  });
+
   it('rejects empty or duplicate species spellcasting provenance IDs', () => {
     const base = { ...selected2024Background(), speciesConfiguration: { origin: origin24, foundry: { systemVersion: '6.0.0', sourceBranch: '6.0.x', sourceCommit: 'a'.repeat(40) }, grants: [], choices: [], spellChoices: [], spellcastingAbility: { advancementIds: ['spell', 'spell'], selected: 'Wisdom' } } };
     expect(() => parseCharacterDocument(base)).toThrow('Invalid character document');

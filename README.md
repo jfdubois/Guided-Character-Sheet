@@ -34,3 +34,7 @@ This plugin is distributed under the [MIT License](LICENSE). Foundry VTT D&D
 5e source content remains the property of its authors and is distributed under
 its applicable license. See the
 [Foundry dnd5e repository](https://github.com/foundryvtt/dnd5e) for details.
+The spell-slot and Pact-casting progression values in the compatibility
+adapter are adapted from the Foundry dnd5e system software, Copyright 2021
+Andrew Clayton, and are distributed under its MIT License. See
+[third-party notices](THIRD-PARTY-NOTICES.md).

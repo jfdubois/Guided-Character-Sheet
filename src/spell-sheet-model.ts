@@ -4,7 +4,7 @@ import type { ClassProgressionSelection } from './class-configuration';
 import { getLevelOneDerivedSpellChoices } from './class-configuration';
 import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from './character-sources';
 import type { FoundrySourceReference, FoundrySpellSummary } from './foundry-source-catalog';
-import { getLevelOneClassProgression } from './level-one-progression';
+import { projectClassLevelProgression } from './class-level-progression';
 import type { SheetValue } from './character-sheet-model';
 import { isRecord } from './foundry-utils';
 import { buildGrantedFeatConfiguration, restoreGrantedFeatConfiguration, validateGrantedFeatConfiguration, type GrantedFeatChoiceConfiguration } from './granted-feat-configuration';
@@ -79,7 +79,8 @@ export interface SpellSheetProjectionInput {
 export function projectSpellSheet(document: CharacterDocument, input: SpellSheetProjectionInput): SpellSheetProjection {
   const warnings: string[] = [];
   const progression = input.progression ?? document.classProgressions?.[0];
-  const classProgression = input.class === undefined ? undefined : getLevelOneClassProgression(input.class);
+  const classProgression = input.class === undefined ? undefined : projectClassLevelProgression(input.class, progression?.targetLevel ?? 1, input.abilityResults === undefined ? {} : { abilityModifiers: { str: input.abilityResults.str.modifier, dex: input.abilityResults.dex.modifier, con: input.abilityResults.con.modifier, int: input.abilityResults.int.modifier, wis: input.abilityResults.wis.modifier, cha: input.abilityResults.cha.modifier } });
+  warnings.push(...(classProgression?.diagnostics ?? []));
   const casting = selectedAbility(progression, document, input.class, input.species, input.background, progression?.targetLevel ?? 1);
   const abilityName = casting.conflict === undefined ? casting.value : undefined;
   const ability = abilityKey(abilityName);
@@ -123,7 +124,7 @@ export function projectSpellSheet(document: CharacterDocument, input: SpellSheet
     }
     rows.set(key, { name: summary.name, level: summary.level, source: available(summary), prepared: available(true), ownership: ['prepared'] });
   }
-  const preparedCapacity = classProgression?.spellcasting?.preparedSpells;
+  const preparedCapacity = classProgression?.spellcasting?.preparedCapacity;
   const highestCastableSpellLevel = classProgression?.spellcasting?.spellSlots?.reduce((highest, slot) => Math.max(highest, slot.level), 0) || undefined;
   const allRows = [...rows.values()].sort((left, right) => left.name.localeCompare(right.name));
   const preparedCount = allRows.filter((row) => preparationApplies(row) && row.prepared.kind === 'available' && row.prepared.value && (highestCastableSpellLevel === undefined || row.level <= highestCastableSpellLevel)).length;
@@ -158,7 +159,7 @@ export function projectSpellSheet(document: CharacterDocument, input: SpellSheet
 function collectSelected(document: CharacterDocument, input: SpellSheetProjectionInput): Array<{ reference: FoundrySourceReference; ownership: string; grantMaximum?: number; grantRecoveryPeriod?: string; grantPreparation?: string; grantRequireSlot?: boolean }> {
   const values: Array<{ reference: FoundrySourceReference; ownership: string; grantMaximum?: number; grantRecoveryPeriod?: string; grantPreparation?: string; grantRequireSlot?: boolean }> = [];
   for (const progression of document.classProgressions ?? []) {
-    const allowed = input.class === undefined ? undefined : new Set([...input.class.advancements.filter((entry) => entry.level <= progression.targetLevel).map((entry) => entry.id), ...getLevelOneDerivedSpellChoices(input.class).map((entry) => entry.advancementId)]);
+    const allowed = input.class === undefined ? undefined : new Set([...input.class.advancements.filter((entry) => entry.level <= progression.targetLevel).map((entry) => entry.id), ...getLevelOneDerivedSpellChoices(input.class, progression.targetLevel).map((entry) => entry.advancementId)]);
     for (const selection of progression.selections) if (selection.kind === 'spell' && ['cantrips-known', 'known-spells', 'spellbook'].includes(selection.selectionRole) && (allowed === undefined || allowed.has(selection.advancementId))) {
       const grant = explicitGrantDetails(selection.raw);
       for (const reference of selection.selected) values.push({ reference, ownership: selection.selectionRole, ...(grant === undefined ? {} : { grantMaximum: grant.maximum, ...(grant.period === undefined ? {} : { grantRecoveryPeriod: grant.period }) }) });

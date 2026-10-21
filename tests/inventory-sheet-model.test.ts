@@ -142,6 +142,13 @@ describe('inventory sheet projection', () => {
     expect(result.kind === 'available' ? result.armor.armorClass : null).toEqual({ kind: 'available', value: 12 });
   });
 
+  it('projects pinned Draconic unarmored AC calculations with their distinct base rules', () => {
+    const bard = projectInventorySheet(baseDocument(), new Map(), 2, { calculation: 'unarmoredBard', secondaryModifier: 3 });
+    const draconic = projectInventorySheet(baseDocument(), new Map(), 2, { calculation: 'draconic', secondaryModifier: 0, base: 13 });
+    expect(bard.kind === 'available' ? bard.armor.armorClass : null).toEqual({ kind: 'available', value: 15 });
+    expect(draconic.kind === 'available' ? draconic.armor.armorClass : null).toEqual({ kind: 'available', value: 15 });
+  });
+
   it('projects equipped medium armor, a shield, and Stealth disadvantage', () => {
     const armor = source('scale-mail', 'Scale Mail');
     const shield = source('shield', 'Shield');

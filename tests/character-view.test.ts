@@ -1,19 +1,23 @@
 import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
-import { CharacterView, collectFinalizationSpellUses, createAbilityScoreUpdate, getBackgroundFeatureCallouts, getBackgroundLanguageOptions, getBackgroundOverview, getBackgroundRenderState, getCharacterCreationSections, getCharacterRenderState, getClassFeatureCallouts, getClassChoiceHeading, getSelectedOriginId, getSpeciesFeatureCallouts, getSpeciesRenderState, getVisibleSpeciesTraitValues, renderSpeciesConfigurationControls, getClassRenderState, getClassChoiceLabel, renderClassConfigurationControls, renderClassChoiceDetails, classChoiceDisplayOptionFromSource, getLevelOneProgressionSummary, renderLevelOneProgressionSummary, getSelectedBackgroundLanguageValues, getBackgroundAbilityControlState, renderBackgroundAbilityControls, renderBackgroundGrantedFeatControls, validateCharacterCreationReadiness, shouldRenderClassFeatureSelections, resolveToolLabels, resolveWeaponLabels, getKnownLanguageKeys } from '../src/character-view';
+import { CharacterView, shouldConfirmRulesetReset, updateClassLevelDraft, collectFinalizationSpellUses, createAbilityScoreUpdate, getBackgroundFeatureCallouts, getBackgroundLanguageOptions, getBackgroundOverview, getBackgroundRenderState, getCharacterCreationSections, getCharacterRenderState, getClassFeatureCallouts, getClassChoiceHeading, getSelectedOriginId, getSpeciesFeatureCallouts, getSpeciesRenderState, getVisibleSpeciesTraitValues, renderSpeciesConfigurationControls, getClassRenderState, getClassChoiceLabel, renderClassConfigurationControls, renderClassChoiceDetails, classChoiceDisplayOptionFromSource, getSelectedBackgroundLanguageValues, getBackgroundAbilityControlState, renderBackgroundAbilityControls, renderBackgroundGrantedFeatControls, validateCharacterCreationReadiness, shouldRenderClassFeatureSelections, resolveToolLabels, resolveWeaponLabels, getKnownLanguageKeys } from '../src/character-view';
 import { buildSpeciesConfiguration, createSpeciesConfiguration, toSpeciesConfigurationSelection } from '../src/species-configuration';
 import type { BackgroundSourceSummary, ClassSourceSummary, SpeciesSourceSummary } from '../src/character-sources';
 import type { CharacterSheetSources } from '../src/character-sheet-model';
 import type { FoundryItemSummary, FoundrySourceReference, FoundrySpellSummary } from '../src/foundry-source-catalog';
 import { createCharacterDocument, parseCharacterDocument, withBackgroundGrantedFeat, withClassProgression, withOrigin, withRuleset, type CharacterDocument } from '../src/character-model';
 import { createDefaultAbilityScores } from '../src/ability-scores';
-import { buildClassConfiguration, restoreClassConfiguration, setClassSelection, toClassProgressionSelection, type ClassAdvancementSelection } from '../src/class-configuration';
+import { buildClassConfiguration, restoreClassConfiguration, setClassSelection, toClassProgressionSelection, validateClassConfiguration, type ClassAdvancementSelection } from '../src/class-configuration';
 import { buildBackgroundAbilityConfiguration, type BackgroundAbilitySelection } from '../src/background-ability-configuration';
 import type { SpellChoice } from '../src/spell-configuration';
 import { getSpellChoiceQueryFilters, mergeSpellSelections, renderSpellChoiceControls } from '../src/character-view';
 import { buildGrantedFeatConfiguration, restoreGrantedFeatConfiguration, setGrantedFeatSpellChoice, setGrantedFeatSpellcastingAbility, toGrantedFeatSelection, validateGrantedFeatConfiguration, type GrantedFeatSelection } from '../src/granted-feat-configuration';
 import { createPinnedSourceIndex } from './support/pinned-foundry-source';
 import type { InventoryItemChanges } from '../src/inventory';
+import { CharacterResetModal } from '../src/character-reset-modal';
+import { setClassHitPointGain } from '../src/class-hit-points';
+import { isRecord } from '../src/foundry-utils';
+import { applyCharacterLevelDraft } from '../src/character-level-change';
 
 const snapshot = { owner: 'foundryvtt', repo: 'dnd5e', branch: '6.0.x', commit: 'a'.repeat(40), systemVersion: '6.0.0' };
 
@@ -77,6 +81,79 @@ function completeSources(background: BackgroundSourceSummary = acolyteSummary): 
 }
 
 describe('character view render state', () => {
+  it('restores a saved level-one pinned Wizard spellbook as a level-three choice', async () => {
+    const index = createPinnedSourceIndex();
+    const summary = await index.getClassSummary('2024', 'packs/_source/classes24/wizard/wizard.yml');
+    const levelOne = buildClassConfiguration(summary, snapshot, 1);
+    const savedChoice = levelOne.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(savedChoice?.kind).toBe('spell');
+    if (savedChoice?.kind !== 'spell') return;
+    savedChoice.selected = savedChoice.options!.filter((option) => isRecord(option.source) && option.source.level === 1).slice(0, 6).map((option) => option.source);
+    const saved = completeDocument({ classProgressions: [toClassProgressionSelection(levelOne)] });
+
+    const draft = updateClassLevelDraft(saved, summary, 3, []);
+    const built = buildClassConfiguration(summary, snapshot, 3);
+    const restored = restoreClassConfiguration(draft.document.classProgressions![0]!, { class: built.class, summary, configuration: built, snapshot });
+    const spellbook = restored.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+
+    expect(spellbook).toMatchObject({ count: 10, level: -1, maxLevel: 2, selected: expect.arrayContaining(savedChoice.selected) });
+    expect(spellbook?.kind === 'spell' ? spellbook.selected : []).toHaveLength(6);
+    expect(spellbook?.kind === 'spell' ? spellbook.options?.some((option) => option.source.name === 'Arcane Lock') : false).toBe(true);
+    expect(restored.diagnostics).toEqual([]);
+    if (spellbook?.kind !== 'spell') return;
+    const arcaneLock = spellbook.options!.find((option) => option.source.name === 'Arcane Lock')!.source;
+    const additions = spellbook.options!.filter((option) => isRecord(option.source) && option.source.level === 2 && !spellbook.selected.some((selected) => selected.id === option.source.id)).slice(0, 4).map((option) => option.source);
+    const updated = setClassSelection(restored, { ...spellbook, selected: [...spellbook.selected, ...additions] });
+    expect(validateClassConfiguration(updated, { class: built.class, summary, configuration: built, snapshot })).toEqual([]);
+    const updatedProgression = toClassProgressionSelection(updated);
+    expect(() => parseCharacterDocument({ ...draft.document, classProgressions: [updatedProgression] })).not.toThrow();
+    const updatedSpellbook = updatedProgression.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(updatedSpellbook?.kind).toBe('spell');
+    if (updatedSpellbook?.kind !== 'spell') return;
+    const loweredSelectionOrder = { ...updatedSpellbook, selected: [arcaneLock, ...updatedSpellbook.selected.slice(0, 9)] };
+    const orderedProgression = { ...updatedProgression, selections: updatedProgression.selections.map((choice) => choice.advancementId === loweredSelectionOrder.advancementId ? loweredSelectionOrder : choice) };
+    const lower = updateClassLevelDraft({ ...draft.document, classProgressions: [orderedProgression] }, summary, 1, []);
+    const loweredSpellbook = lower.document.classProgressions?.[0]?.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(loweredSpellbook?.kind === 'spell' ? loweredSpellbook.selected.map((spell) => spell.name) : []).not.toContain('Arcane Lock');
+    expect(loweredSpellbook?.kind === 'spell' ? loweredSpellbook.selected.map((spell) => { const source = summary.spellOptions?.find((candidate) => candidate.id === spell.id); return source !== undefined && isRecord(source) ? source.level : undefined; }) : []).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(loweredSpellbook).toMatchObject({ count: 6, selected: expect.arrayContaining(savedChoice.selected) });
+    const raisedAgain = updateClassLevelDraft(lower.document, summary, 3, []);
+    const restoredAgain = restoreClassConfiguration(raisedAgain.document.classProgressions![0]!, { class: built.class, summary, configuration: built, snapshot });
+    expect(restoredAgain.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook')).toMatchObject({ count: 10, level: -1, maxLevel: 2, selected: expect.arrayContaining(savedChoice.selected) });
+
+    const applySummary = { ...summary, advancements: [] };
+    const applyLevelOne = buildClassConfiguration(applySummary, snapshot, 1);
+    const applyCantrips = applyLevelOne.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'cantrips-known');
+    const applySpellbook = applyLevelOne.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(applyCantrips?.kind).toBe('spell');
+    expect(applySpellbook?.kind).toBe('spell');
+    if (applyCantrips?.kind !== 'spell' || applySpellbook?.kind !== 'spell') return;
+    const oneLevelCantrips = applyCantrips.options!.filter((option) => isRecord(option.source) && option.source.level === 0).slice(0, 3).map((option) => option.source);
+    const oneLevelBook = applySpellbook.options!.filter((option) => isRecord(option.source) && option.source.level === 1).slice(0, 6).map((option) => option.source);
+    let applyConfiguration = setClassSelection(applyLevelOne, { ...applyCantrips, selected: oneLevelCantrips });
+    applyConfiguration = setClassSelection(applyConfiguration, { ...applySpellbook, selected: oneLevelBook });
+    const hp = [1, 2, 3].map((level) => ({ classSourcePath: summary.source.sourcePath, level, value: level === 1 ? 'max' as const : 'avg' as const }));
+    const inventory = { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } };
+    const applySaved = completeDocument({
+      classProgressions: [toClassProgressionSelection(applyConfiguration)],
+      classHitPoints: [hp[0]!],
+      mutable: { preparedSpells: [], inventory, equipmentStatus: [], resources: [], hitPoints: { current: 9, maximum: 9, temporary: 0 }, inspiration: false, spellSlots: [], spellUses: [] },
+    });
+    const applyDraft = updateClassLevelDraft(applySaved, applySummary, 3, hp).document;
+    const applyLevelThree = buildClassConfiguration(applySummary, snapshot, 3);
+    const applyRestored = restoreClassConfiguration(applyDraft.classProgressions![0]!, { class: applyLevelThree.class, summary: applySummary, configuration: applyLevelThree, snapshot });
+    const applyWizardBook = applyRestored.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(applyWizardBook?.kind).toBe('spell');
+    if (applyWizardBook?.kind !== 'spell') return;
+    const secondLevelOptions = applyWizardBook.options!.filter((option) => isRecord(option.source) && option.source.level === 2 && !applyWizardBook.selected.some((selected) => selected.id === option.source.id));
+    const completedApplyConfiguration = setClassSelection(applyRestored, { ...applyWizardBook, selected: [...applyWizardBook.selected, ...secondLevelOptions.slice(0, 4).map((option) => option.source)] });
+    const applied = applyCharacterLevelDraft(applySaved, { ...applyDraft, classProgressions: [toClassProgressionSelection(completedApplyConfiguration)], classHitPoints: hp }, { ...completeSources(), class: applySummary });
+    const appliedBook = applied.classProgressions?.[0]?.selections.find((choice) => choice.kind === 'spell' && choice.selectionRole === 'spellbook');
+    expect(appliedBook).toMatchObject({ count: 10, level: -1, maxLevel: 2 });
+    expect(appliedBook?.kind === 'spell' ? appliedBook.selected : []).toHaveLength(10);
+    expect(applied.classHitPoints).toHaveLength(3);
+  });
+
   it('renders specific Rogue weapon grants once and uses a readable source language name', () => {
     const rendered: string[] = [];
     const root = createDropdownTestRoot([], rendered);
@@ -247,35 +324,6 @@ describe('character view render state', () => {
     renderBackgroundGrantedFeatControls(unsupportedRoot.root as unknown as HTMLElement, { kind: 'unsupported', reason: 'Nested choice is unsupported' }, undefined, () => undefined);
     expect(unsupportedRoot.text).toEqual(['Nested choice is unsupported']);
   });
-  it('renders read-only level-one progression and mutable summaries', () => {
-    const rendered: string[] = [];
-    const root = createSpellTestRoot(rendered);
-    const spell = spellReference('Shield', 'shield', 1, ['wizard']);
-    const summary = { source: { sourcePath: 'packs/_source/classes24/wizard/wizard.yml', pack: 'dnd5e.classes24', type: 'class', id: 'wizard', name: 'Wizard', identifier: 'wizard' }, ruleset: '2024' as const, hitDie: 'd6', advancements: [], spellcasting: { progression: 'full', ability: 'int', cantripsKnown: 3, spellbookSpells: 6, preparedSpells: 4, spellSlots: { '1': 2 }, spellLists: ['wizard'] }, spellOptions: [spell.source] };
-    const configuration = buildClassConfiguration(summary, snapshot, 1);
-    const document = { ...createCharacterDocument('Ayla', snapshot), ruleset: '2024' as const, classProgressions: [{ class: { sourcePath: summary.source.sourcePath, identifier: 'wizard', id: 'wizard' }, targetLevel: 1, selections: [] }], mutable: { preparedSpells: [spell.source], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [], resources: [] } };
-
-    expect(getLevelOneProgressionSummary(summary as never, configuration)).toMatchObject({ spellcastingAbility: 'Intelligence', proficiencyBonus: 2, cantripsKnown: 3, spellbookSpells: 6, preparedCapacity: 4, spellSlots: [{ level: 1, maximum: 2 }] });
-    renderLevelOneProgressionSummary(root as unknown as HTMLElement, getLevelOneProgressionSummary(summary as never, configuration), document as never);
-    expect(rendered).toEqual(expect.arrayContaining(['Intelligence', 'Proficiency bonus: +2', 'Cantrips known: 3', 'Spellbook: 6', 'Prepared capacity: 4', '1st-level spell slots: 2', 'Prepared spells', 'Shield']));
-  });
-  it('uses source-backed slots and reports unavailable derived values', () => {
-    const summary = { source: { sourcePath: 'packs/_source/classes24/wizard/wizard.yml', pack: 'dnd5e.classes24', type: 'class', id: 'wizard', name: 'Wizard', identifier: 'wizard' }, ruleset: '2024' as const, hitDie: 'd6', advancements: [], spellcasting: { progression: 'full', ability: 'int', spellSlots: { '1': 2 } } };
-    const configuration = buildClassConfiguration(summary, snapshot, 1);
-    expect(getLevelOneProgressionSummary(summary as never, configuration)).toMatchObject({ spellSlots: [{ level: 1, maximum: 2 }], diagnostics: [] });
-    const incomplete = { ...summary, spellcasting: { progression: 'full', ability: 'int' } };
-    expect(getLevelOneProgressionSummary(incomplete as never, configuration).diagnostics).toContain('Level-one spell-slot data is unavailable from the class source.');
-  });
-
-  it('renders mutable equipment status without making it a creation control', () => {
-    const rendered: string[] = [];
-    const root = createSpellTestRoot(rendered);
-    const document = { ...createCharacterDocument('Ayla', snapshot), mutable: { preparedSpells: [], inventory: { items: [], currency: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 } }, equipmentStatus: [{ entryId: 'shield', equipped: true, attuned: false }, { entryId: 'ring', equipped: false, attuned: true }], resources: [] } };
-    const configuration = buildClassConfiguration({ source: { sourcePath: 'packs/_source/classes/wizard.yml', pack: 'dnd5e.classes', type: 'class', id: 'wizard', name: 'Wizard' }, ruleset: '2014' as const, hitDie: 'd6', advancements: [] }, snapshot, 1);
-    renderLevelOneProgressionSummary(root as unknown as HTMLElement, { proficiencyBonus: 2, spellSlots: [], diagnostics: [] }, document as never, configuration);
-    expect(rendered).toContain('shield: equipped, not attuned');
-    expect(rendered).toContain('ring: not equipped, attuned');
-  });
   it('renders available spell choices in dependency order and hides dependent choices', () => {
     const rendered: string[] = [];
     const root = createSpellTestRoot(rendered);
@@ -409,6 +457,11 @@ describe('character view render state', () => {
   it('does not add a cantrip filter for an unrestricted spell level', () => {
     const choice = spellChoice('spells:any', 'Any spell', 1, -1, ['wizard'], [], undefined);
     expect(getSpellChoiceQueryFilters(choice)).toEqual({ spellLists: ['wizard'] });
+  });
+
+  it('limits an unrestricted spell query to the maximum source-backed castable level', () => {
+    const choice = { ...spellChoice('spells:known', 'Known spells', 2, -1, ['wizard'], [], undefined), maxLevel: 2 };
+    expect(getSpellChoiceQueryFilters(choice)).toEqual({ maxLevel: 2, spellLists: ['wizard'] });
   });
 
   it('removes a stale diagnostic when an async catalog result resolves the saved spell', async () => {
@@ -1272,6 +1325,15 @@ describe('character view render state', () => {
     expect(getClassChoiceHeading(configuration, configuration.choices[0])).toBe('Skill proficiencies');
   });
 
+  it('uses Subclass when the source has no subclass title', () => {
+    const configuration = buildClassConfiguration({
+      source: { sourcePath: 'packs/_source/classes24/rogue/rogue.yml', pack: 'dnd5e.classes24', type: 'class', id: 'rogue-id', identifier: 'rogue', name: 'Rogue' },
+      ruleset: '2024', hitDie: 'd8', advancements: [{ id: 'subclass', type: 'Subclass', level: 3, title: '', hint: '', dependencies: [], raw: {} }],
+    }, snapshot, 3);
+
+    expect(getClassChoiceLabel(configuration, configuration.choices[0]!)).toBe('Subclass');
+  });
+
   it('renders multi-choice class skills as repeated single-select dropdowns', () => {
     const selects: DropdownTestSelect[] = []; const root = createDropdownTestRoot(selects);
     const configuration = buildClassConfiguration({
@@ -2086,17 +2148,20 @@ describe('character view render state', () => {
 
   it('resolves wildcard sources through the class renderer and preserves the choice across equipment updates', async () => {
     const document = createSheetDocument();
-    Object.assign(document.classProgressions[0], { selections: [{ advancementId: 'tools', kind: 'trait', selected: [], configuredPool: ['tool:music:*'] } as ClassAdvancementSelection] });
+    Object.assign(document.classProgressions[0], { targetLevel: 2, selections: [{ advancementId: 'tools', kind: 'trait', selected: ['tool:music:lyre'], configuredPool: ['tool:music:*'] } as ClassAdvancementSelection] });
     const summary = {
       ...createSheetClassSummary(document),
-      advancements: [{ id: 'tools', type: 'Trait', level: 1, title: 'Tool proficiency', hint: '', dependencies: [], raw: { configuration: { choices: [{ count: 1, pool: ['tool:music:*'] }] } } }],
+      advancements: [
+        { id: 'tools', type: 'Trait', level: 1, title: 'Tool proficiency', hint: '', dependencies: [], raw: { configuration: { choices: [{ count: 1, pool: ['tool:music:*'] }] } } },
+        { id: 'skills', type: 'Trait', level: 2, title: 'Skill proficiency', hint: '', dependencies: [], raw: { configuration: { choices: 1, pool: ['skills:acr'] } } },
+      ],
       startingEquipment: { roots: [], diagnostics: [] },
     };
     const item = { sourcePath: 'packs/_source/items24/tools/lyre.yml', pack: 'dnd5e.items24', type: 'tool', id: 'document-id', identifier: 'lyre', name: 'Lyre', ruleset: '2024' as const, itemType: 'tool', magic: false, equippable: false, properties: [] };
     expect(buildClassConfiguration(summary, snapshot, 1).choices).toHaveLength(1);
     const selects: DropdownTestSelect[] = [];
-    const callouts: string[] = [];
-    const root = createDropdownTestRoot(selects);
+    const textNodes: string[] = [];
+    const root = createDropdownTestRoot(selects, textNodes);
     let pending: ((value: typeof document) => typeof document) | undefined;
     let equipmentCommit: ((selection: unknown) => void) | undefined;
     const view = Object.create(CharacterView.prototype) as Record<string, unknown>;
@@ -2106,14 +2171,17 @@ describe('character view render state', () => {
       sourceReader: { listClasses: async () => [{ id: 'fighter-id', name: 'Fighter', identifier: 'fighter', sourcePath: document.classProgressions[0].class.sourcePath }] },
       sourceIndex: { getClassSummary: async () => summary, resolveSelector: async () => [item] },
       renderClassTraits: () => undefined,
-      renderClassCallout: (_root: HTMLElement, label: string, _open: boolean, render: (content: HTMLElement) => void) => { callouts.push(label); render(root as unknown as HTMLElement); return root; },
+      renderClassCallout: (_root: HTMLElement, _label: string, _open: boolean, render: (content: HTMLElement) => void) => { render(root as unknown as HTMLElement); return root; },
       renderEquipmentPackages: (_root: HTMLElement, _summary: unknown, _selected: unknown, _resolved: unknown, commit: (selection: unknown) => void) => { equipmentCommit = commit; },
       queueUpdate: (update: (value: typeof document) => typeof document) => { const previous = pending; pending = previous === undefined ? update : (value) => update(previous(value)); },
     });
 
     await (CharacterView.prototype as unknown as { renderClassStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderClassStep.call(view, root as unknown as HTMLElement);
-    expect(callouts).toContain('Tool proficiency');
-    const traitSelect = selects.at(-1)!;
+    expect(textNodes).toContain('Fighter · Level 2');
+    const levelPreview = selects.find((select) => select.attributes['aria-label'] === 'Class level preview');
+    expect(levelPreview).toBeDefined();
+    expect(levelPreview?.options.map((option) => option.value)).toEqual(Array.from({ length: 20 }, (_value, index) => String(index + 1)));
+    const traitSelect = selects.find((select) => select.options.some((option) => option.value === 'tool:music:lyre'))!;
     expect(traitSelect.options.map((option) => option.value)).toContain('tool:music:lyre');
     traitSelect.value = 'tool:music:lyre';
     traitSelect.handlers[0]();
@@ -2513,6 +2581,7 @@ describe('character view render state', () => {
     await (CharacterView.prototype as unknown as { finalizeCharacter(this: Record<string, unknown>): Promise<void> }).finalizeCharacter.call(view);
     const written = update.mock.results[0]?.value;
     const finalized = await written as CharacterDocument;
+    expect(finalized.classHitPoints).toEqual([{ classSourcePath: document.classProgressions![0]!.class.sourcePath, level: 1, value: 'max' }]);
     expect(finalized.mutable).toMatchObject({ hitPoints: { current: 13, maximum: 13 }, inspiration: false, spellSlots: [{ level: 1, current: 2, maximum: 2 }], spellUses: [{ current: 1, maximum: 1, reset: 'long-rest' }] });
     expect(finalized.mutable?.resources).toEqual(expect.arrayContaining([
       { key: 'feature:packs/_source/features/second-wind.yml', current: 2, maximum: 2, reset: 'short-rest', recovery: [{ period: 'short-rest', type: 'recover-all' }] },
@@ -2737,10 +2806,11 @@ function createDropdownTestRoot(selects: DropdownTestSelect[], rendered: string[
     textContent: '',
     createDiv: () => createNode(),
     createSpan: (options?: { text?: string }) => { if (options?.text) rendered.push(options.text); return createNode(); },
-    createEl: (tag: string, options?: { value?: string; text?: string }) => {
+    createEl: (tag: string, options?: { value?: string; text?: string; attr?: Record<string, string> }) => {
       if (options?.text) rendered.push(options.text);
       if (tag !== 'select') return createNode();
       const select = createSelect();
+      Object.assign(select.attributes, options?.attr ?? {});
       selects.push(select);
       return select;
     },
@@ -2749,6 +2819,313 @@ function createDropdownTestRoot(selects: DropdownTestSelect[], rendered: string[
   return createNode();
 }
 
+});
+
+describe('completed character draft editing', () => {
+  it('requires a ruleset reset warning for saved selections in both completed and incomplete characters', () => {
+    expect(shouldConfirmRulesetReset(completeDocument())).toBe(true);
+    expect(shouldConfirmRulesetReset(withRuleset(createCharacterDocument('Ayla', snapshot), '2024'))).toBe(false);
+  });
+
+  it('keeps the current ruleset control in Identity for an existing selection', async () => {
+    const document = completeDocument();
+    const selects: Array<{ value: string; options: Array<{ value: string; selected: boolean }>; handlers: Array<() => void> }> = [];
+    const view = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document,
+      queueUpdate: vi.fn(),
+    });
+    const root = createDraftIdentityRoot(selects);
+
+    await (CharacterView.prototype as unknown as { renderIdentityStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderIdentityStep.call(view, root as unknown as HTMLElement);
+
+    expect(selects.some((select) => select.options.some((option) => option.value === '2014') && select.options.some((option) => option.value === '2024'))).toBe(true);
+    expect(selects[0]?.options.find((option) => option.value === '2024')?.selected).toBe(true);
+  });
+
+  it('leaves an in-progress character unchanged when a ruleset reset is dismissed', async () => {
+    const document = completeDocument();
+    const selects: Array<{ value: string; options: Array<{ value: string; selected: boolean }>; handlers: Array<() => void> }> = [];
+    const queueUpdate = vi.fn();
+    const view = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document,
+      app: {},
+      completedEditMode: false,
+      inactiveClassHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 2, value: 'avg' }],
+      draftClassHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 2, value: 'avg' }],
+      queueUpdate,
+      render: vi.fn(),
+    });
+    const root = createDraftIdentityRoot(selects);
+    const open = vi.spyOn(CharacterResetModal.prototype, 'open').mockImplementation(function (this: CharacterResetModal) { modal = this; });
+    let modal: CharacterResetModal | undefined;
+    try {
+      await (CharacterView.prototype as unknown as { renderIdentityStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderIdentityStep.call(view, root as unknown as HTMLElement);
+      const select = selects[0]!;
+      select.value = '2014';
+      select.handlers[0]!();
+      expect(modal).toBeDefined();
+      expect(queueUpdate).not.toHaveBeenCalled();
+      modal?.onClose();
+      expect(document.ruleset).toBe('2024');
+      expect(queueUpdate).not.toHaveBeenCalled();
+      (modal as unknown as { onConfirm(): void } | undefined)?.onConfirm();
+      expect(view.inactiveClassHitPoints).toEqual([]);
+      expect(view.draftClassHitPoints).toEqual([]);
+      expect(queueUpdate).toHaveBeenCalledTimes(1);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('warns before replacing a selected class during in-progress creation and preserves it on Cancel', async () => {
+    const document = completeDocument();
+    const classProgression = { class: { sourcePath: creationClass.sourcePath, identifier: creationClass.identifier, id: creationClass.id }, targetLevel: 1, selections: [{ advancementId: 'choice', kind: 'trait' as const, selected: ['skills:acr'], configuredPool: ['skills:acr'] }] };
+    document.classProgressions = [classProgression];
+    const replacement = { sourcePath: 'packs/_source/classes24/wizard/wizard.yml', identifier: 'wizard', id: 'wizard-id', name: 'Wizard', ruleset: '2024' as const };
+    const selects: Array<{ value: string; options: Array<{ value: string; selected: boolean }>; handlers: Array<() => void> }> = [];
+    const selectClass = vi.fn();
+    const view = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document,
+      app: {},
+      completedEditMode: false,
+      inactiveClassHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 2, value: 'avg' }],
+      draftClassHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 2, value: 'avg' }],
+      sourceReader: { listClasses: vi.fn(async () => [replacement]) },
+      sourceIndex: { getClassSummary: vi.fn(async () => { throw new Error('source unavailable'); }) },
+      selectClass,
+      render: vi.fn(),
+    });
+    const root = createDraftIdentityRoot(selects);
+    const open = vi.spyOn(CharacterResetModal.prototype, 'open').mockImplementation(function (this: CharacterResetModal) { modal = this; });
+    let modal: CharacterResetModal | undefined;
+    try {
+      await (CharacterView.prototype as unknown as { renderClassStep(this: Record<string, unknown>, root: HTMLElement): Promise<void> }).renderClassStep.call(view, root as unknown as HTMLElement);
+      const select = selects[0]!;
+      select.value = replacement.id;
+      select.handlers[0]!();
+
+      expect(modal).toBeDefined();
+      expect(selectClass).not.toHaveBeenCalled();
+      expect(document.classProgressions).toEqual([classProgression]);
+      modal?.onClose();
+      expect(view.render).toHaveBeenCalled();
+      expect(document.classProgressions).toEqual([classProgression]);
+      (modal as unknown as { onConfirm(): void } | undefined)?.onConfirm();
+      expect(view.inactiveClassHitPoints).toEqual([]);
+      expect(view.draftClassHitPoints).toEqual([]);
+      expect(selectClass).toHaveBeenCalledWith(replacement);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('raises a level-one draft without persisting an incomplete HP ledger', () => {
+    const saved = completeDocument({ classHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 1, value: 'max' }] });
+    saved.classProgressions = [{ ...saved.classProgressions![0]!, targetLevel: 1, selections: [{ advancementId: 'level-one', kind: 'trait', selected: ['skills:acr'], configuredPool: ['skills:acr'] }] }];
+    const summary = draftLevelSummary();
+    let comparisonHitPoints = structuredClone(saved.classHitPoints ?? []);
+    const writes = vi.fn();
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document: saved,
+      completedEditMode: true,
+      opened: true,
+      conflict: false,
+      inactiveClassHitPoints: comparisonHitPoints,
+      render: async () => undefined,
+      renderUnavailable: vi.fn(),
+      store: { update: writes },
+    });
+    (CharacterView.prototype as unknown as { queueUpdate(this: Record<string, unknown>, update: (document: CharacterDocument) => CharacterDocument): void }).queueUpdate.call(context, (document: CharacterDocument) => {
+      const result = updateClassLevelDraft(document, summary, 2, comparisonHitPoints);
+      comparisonHitPoints = result.comparisonHitPoints;
+      context.inactiveClassHitPoints = comparisonHitPoints;
+      return result.document;
+    });
+    const draft = context.document as CharacterDocument;
+
+    expect(draft.classProgressions?.[0]?.targetLevel).toBe(2);
+    expect(draft.classHitPoints).toBeUndefined();
+    expect(comparisonHitPoints).toEqual(saved.classHitPoints);
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('trims inactive selections and restores only recorded HP entries after a 3-to-1-to-3 draft', () => {
+    const hp = [1, 2, 3].map((level) => ({ classSourcePath: creationClass.sourcePath, level, value: level === 1 ? 'max' as const : 'avg' as const }));
+    const saved = completeDocument({ classHitPoints: hp });
+    saved.classProgressions = [{ ...saved.classProgressions![0]!, targetLevel: 3, selections: [
+      { advancementId: 'level-one', kind: 'trait', selected: ['skills:acr'], configuredPool: ['skills:acr'] },
+      { advancementId: 'level-three', kind: 'trait', selected: ['skills:arc'], configuredPool: ['skills:arc'] },
+    ] }];
+    const summary = draftLevelSummary();
+
+    const lower = updateClassLevelDraft(saved, summary, 1, hp);
+    const raise = updateClassLevelDraft(lower.document, summary, 3, lower.comparisonHitPoints);
+
+    expect(lower.document.classProgressions?.[0]?.selections.map((selection) => selection.advancementId)).toEqual(['level-one']);
+    expect(lower.document.classHitPoints).toEqual([hp[0]]);
+    expect(raise.document.classProgressions?.[0]?.selections.map((selection) => selection.advancementId)).toEqual(['level-one']);
+    expect(raise.document.classHitPoints).toEqual(hp);
+    expect(raise.comparisonHitPoints).toEqual(hp);
+  });
+
+  it('integrates Edit level changes, HP entry, Apply, Cancel, and a confirmed ruleset reset', async () => {
+    const classPath = creationClass.sourcePath;
+    const saved = completeDocument({ classHitPoints: [{ classSourcePath: classPath, level: 1, value: 'max' }] });
+    const summary = draftLevelSummary();
+    let comparisonHitPoints = structuredClone(saved.classHitPoints ?? []);
+    let persisted = structuredClone(saved);
+    const updateIfUnchanged = vi.fn(async (_file: unknown, _expected: CharacterDocument, update: (current: CharacterDocument) => CharacterDocument) => {
+      persisted = update(structuredClone(persisted));
+      return persisted;
+    });
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      file: { path: 'Characters/ayla.json' }, document: structuredClone(saved), savedDocument: structuredClone(saved),
+      completedEditMode: true, conflict: false, opened: true, pendingUpdate: undefined, flushInProgress: undefined,
+      inactiveClassHitPoints: comparisonHitPoints, draftClassHitPoints: structuredClone(comparisonHitPoints),
+      flushPendingUpdate: async () => undefined, render: async () => undefined, renderUnavailable: vi.fn(),
+      loadCharacterSheetSources: async () => completeSources(), store: { updateIfUnchanged },
+      leaf: { setViewState: async () => undefined }, loadFromState: async () => undefined,
+    });
+
+    const levelTwo = updateClassLevelDraft(context.document as CharacterDocument, summary, 2, comparisonHitPoints);
+    comparisonHitPoints = setClassHitPointGain(levelTwo.comparisonHitPoints, classPath, 2, 'avg');
+    const levelOne = updateClassLevelDraft(levelTwo.document, summary, 1, comparisonHitPoints);
+    const raisedAgain = updateClassLevelDraft(levelOne.document, summary, 2, levelOne.comparisonHitPoints);
+    context.document = { ...raisedAgain.document, classHitPoints: comparisonHitPoints };
+    context.inactiveClassHitPoints = levelOne.comparisonHitPoints;
+
+    expect(persisted).toEqual(saved);
+    expect((context.document as CharacterDocument).classHitPoints).toEqual([
+      { classSourcePath: classPath, level: 1, value: 'max' },
+      { classSourcePath: classPath, level: 2, value: 'avg' },
+    ]);
+    await (CharacterView.prototype as unknown as { applyCharacterDraft(this: typeof context): Promise<void> }).applyCharacterDraft.call(context);
+    expect(updateIfUnchanged).toHaveBeenCalledTimes(1);
+    expect(persisted.classProgressions?.[0]?.targetLevel).toBe(2);
+    expect(persisted.classHitPoints).toHaveLength(2);
+
+    context.savedDocument = structuredClone(persisted);
+    context.document = structuredClone(persisted);
+    const beforeCancel = JSON.stringify(persisted);
+    const lowered = updateClassLevelDraft(context.document as CharacterDocument, summary, 1, persisted.classHitPoints);
+    context.document = lowered.document;
+    context.completedEditMode = true;
+    context.queueUpdate = (update: (document: CharacterDocument) => CharacterDocument) => { context.document = update(context.document as CharacterDocument); };
+    const selects: Array<{ value: string; options: Array<{ value: string; selected: boolean }>; handlers: Array<() => void> }> = [];
+    let openedModal: CharacterResetModal | undefined;
+    const open = vi.spyOn(CharacterResetModal.prototype, 'open').mockImplementation(function(this: CharacterResetModal) { openedModal = this; return this; });
+    try {
+      (CharacterView.prototype as unknown as { renderRuleset(this: typeof context, root: HTMLElement, options: ['2014', '2024']): void }).renderRuleset.call(context, createDraftIdentityRoot(selects) as unknown as HTMLElement, ['2014', '2024']);
+      selects[0]!.value = '2014';
+      selects[0]!.handlers[0]!();
+      expect(openedModal).toBeDefined();
+      expect((context.document as CharacterDocument).ruleset).toBe('2024');
+      (openedModal as unknown as { onConfirm(): void }).onConfirm();
+      expect((context.document as CharacterDocument).ruleset).toBe('2014');
+      expect((context.document as CharacterDocument).classHitPoints).toBeUndefined();
+      await (CharacterView.prototype as unknown as { cancelCharacterDraft(this: typeof context): Promise<void> }).cancelCharacterDraft.call(context);
+    } finally {
+      open.mockRestore();
+    }
+    expect(JSON.stringify(persisted)).toBe(beforeCancel);
+    expect(context.document).toEqual(persisted);
+    expect(updateIfUnchanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an edit in memory and Cancel restores the saved document byte-for-byte', async () => {
+    const saved = completeDocument();
+    const file = new TFile();
+    file.path = 'Characters/ayla.json';
+    const persisted = JSON.stringify(saved, null, 2) + '\n';
+    let writes = 0;
+    const context = {
+      file,
+      document: structuredClone(saved),
+      savedDocument: structuredClone(saved),
+      completedEditMode: true,
+      conflict: false,
+      opened: true,
+      renderUnavailable: (message: string) => { throw new Error(message); },
+      render: async () => undefined,
+      contentEl: { empty: () => undefined, createDiv: () => ({}) },
+      store: { updateIfUnchanged: async () => { writes += 1; return saved; } },
+      flushPendingUpdate: async () => undefined,
+      leaf: { setViewState: async () => undefined },
+      loadFromState: async () => undefined,
+    };
+
+    (CharacterView.prototype as unknown as { queueUpdate(this: typeof context, update: (document: CharacterDocument) => CharacterDocument): void }).queueUpdate.call(context, (document: CharacterDocument) => withRuleset(document, '2014'));
+    expect(context.document.ruleset).toBe('2014');
+    expect(context.document.origin).toBeUndefined();
+    expect(writes).toBe(0);
+
+    await (CharacterView.prototype as unknown as { cancelCharacterDraft(this: typeof context): Promise<void> }).cancelCharacterDraft.call(context);
+
+    expect(context.document).toEqual(saved);
+    expect(JSON.stringify(saved, null, 2) + '\n').toBe(persisted);
+    expect(writes).toBe(0);
+  });
+
+  it('requires explicit confirmation for a ruleset or class reset', () => {
+    const createModal = (onConfirm: () => void): Map<string, () => void> => {
+      const buttons = new Map<string, () => void>();
+      type ModalNode = {
+        createDiv: (_options?: { text?: string; cls?: string }) => ModalNode;
+        createEl: (_tag: string, options?: { text?: string; cls?: string; attr?: Record<string, string> }) => ModalNode;
+        addEventListener: (_event: string, handler: () => void) => void;
+      };
+      const createNode = (): ModalNode => ({
+        createDiv: () => createNode(),
+        createEl: (_tag, options) => {
+          const button = createNode();
+          button.addEventListener = (_event, handler) => { if (options?.text) buttons.set(options.text, handler); };
+          return button;
+        },
+        addEventListener: () => undefined,
+      });
+      const modal = new CharacterResetModal({} as never, 'Replace class?', 'Class-dependent choices will reset.', 'Replace class', onConfirm);
+      Object.assign(modal, { titleEl: { textContent: '' }, contentEl: { empty: () => undefined, createDiv: () => createNode() }, close: () => undefined });
+      modal.onOpen();
+      return buttons;
+    };
+    let resetCount = 0;
+
+    createModal(() => { resetCount += 1; }).get('Cancel')?.();
+    expect(resetCount).toBe(0);
+    createModal(() => { resetCount += 1; }).get('Replace class')?.();
+    expect(resetCount).toBe(1);
+  });
+
+  it('keeps an invalid Apply draft editable, reports the error inline, and does not write', async () => {
+    const saved = completeDocument({ classHitPoints: [{ classSourcePath: creationClass.sourcePath, level: 1, value: 'max' }] });
+    const draft = structuredClone(saved);
+    draft.classProgressions![0]!.targetLevel = 2;
+    delete draft.classHitPoints;
+    const persisted = JSON.stringify(saved);
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      file: { path: 'Characters/ayla.md' }, savedDocument: saved, document: draft,
+      completedEditMode: true, conflict: false, pendingUpdate: undefined, flushInProgress: undefined,
+      loadCharacterSheetSources: vi.fn(async () => { throw new Error('Missing class hit-point entry for level 2.'); }),
+      store: { updateIfUnchanged: vi.fn() }, render: vi.fn(async () => undefined), renderUnavailable: vi.fn(),
+    });
+    await (CharacterView.prototype as unknown as { applyCharacterDraft(this: typeof context): Promise<void> }).applyCharacterDraft.call(context);
+    expect(context.document).toEqual(draft);
+    expect(JSON.stringify(saved)).toBe(persisted);
+    expect(context.store.updateIfUnchanged).not.toHaveBeenCalled();
+    expect(context.renderUnavailable).not.toHaveBeenCalled();
+    expect(context.draftApplyError).toBe('Missing class hit-point entry for level 2.');
+    expect(context.render).toHaveBeenCalled();
+
+    const labels: string[] = [];
+    const messages: string[] = [];
+    const makeNode = (): Record<string, unknown> => ({
+      createDiv: (options?: { text?: string }) => { if (options?.text) messages.push(options.text); return makeNode(); },
+      createEl: (_tag: string, options?: { text?: string }) => { if (options?.text) labels.push(options.text); return { disabled: false, setAttribute: () => undefined, addEventListener: () => undefined }; },
+    });
+    (CharacterView.prototype as unknown as { renderEditDraftActions(this: typeof context, root: HTMLElement): void }).renderEditDraftActions.call(context, makeNode() as unknown as HTMLElement);
+    expect(messages).toContain('Missing class hit-point entry for level 2.');
+    expect(labels).toContain('Cancel');
+  });
 });
 
 function createSheetDocument() {
@@ -2761,6 +3138,41 @@ function createSheetDocument() {
     background: { sourcePath: 'packs/_source/origins24/backgrounds/soldier.yml', identifier: 'soldier', id: 'soldier-id' },
     abilityScores: { method: 'standard-array' as const, base: { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 }, manual: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 } },
   };
+}
+
+function draftLevelSummary(): ClassSourceSummary {
+  return {
+    source: { sourcePath: creationClass.sourcePath, pack: 'dnd5e.classes24', type: 'class', id: creationClass.id, identifier: creationClass.identifier, name: 'Fighter' },
+    ruleset: '2024',
+    hitDie: 'd10',
+    advancements: [
+      { id: 'level-one', type: 'Trait', level: 1, title: 'Skill choice', hint: '', dependencies: [], raw: { configuration: { choices: 1, pool: ['skills:acr'] } } },
+      { id: 'level-three', type: 'Trait', level: 3, title: 'Later skill choice', hint: '', dependencies: [], raw: { configuration: { choices: 1, pool: ['skills:arc'] } } },
+    ],
+  };
+}
+
+function createDraftIdentityRoot(selects: Array<{ value: string; options: Array<{ value: string; selected: boolean }>; handlers: Array<() => void> }>): Record<string, unknown> {
+  const createNode = (): Record<string, unknown> => ({
+    value: '', textContent: '',
+    createDiv: () => createNode(), createSpan: () => createNode(),
+    createEl: (tag: string, options?: { value?: string; text?: string; type?: string }) => {
+      if (tag !== 'select') return createNode();
+      const control = { value: '', options: [] as Array<{ value: string; selected: boolean }>, handlers: [] as Array<() => void> };
+      const select = createNode();
+      select.createEl = (_optionTag: string, option?: { value?: string; text?: string }) => {
+        const entry = { value: option?.value ?? '', selected: false };
+        control.options.push(entry);
+        return entry;
+      };
+      select.addEventListener = (_event: string, handler: () => void) => control.handlers.push(handler);
+      Object.defineProperty(select, 'value', { get: () => control.value, set: (value: string) => { control.value = value; } });
+      selects.push(control);
+      return select;
+    },
+    addEventListener: () => undefined,
+  });
+  return createNode();
 }
 
 function createSheetClassSummary(document: ReturnType<typeof createSheetDocument>) {

@@ -1,3 +1,4 @@
+import { setTooltip } from 'obsidian';
 import { CHARACTER_SHEET_SECTIONS, isCharacterSheetSection, type CharacterSheetProjection, type CharacterSheetSection, type SheetValue } from './character-sheet-model';
 import type { InventorySheetProjection, InventorySheetRow } from './inventory-sheet-model';
 import type { SpellSheetRow } from './spell-sheet-model';
@@ -32,11 +33,11 @@ export function renderCharacterSheet(root: HTMLElement, sheet: CharacterSheetPro
   renderHeader(layout, sheet, options);
   const body = layout.createDiv({ cls: 'guided-character-sheet__sheet-body' });
   if (options.selectedSection === 'abilities') renderAbilities(body, sheet);
-  else if (options.selectedSection === 'inventory') renderInventory(body, sheet.inventory, sheet.warnings, options.onToggleEquipment, options.onManageCurrency, options.onManageItems);
-  else if (options.selectedSection === 'spells') renderSpells(body, sheet.spells, sheet.warnings, options.onToggleSpellSlot, options.onToggleSpellUse, options.onManageSpells, options.onToggleSpellPreparation);
-  else if (options.selectedSection === 'features-and-traits') renderFeatures(body, sheet.features, sheet.warnings);
-  else if (options.selectedSection === 'actions') renderActions(body, sheet.actions, sheet.warnings, options.onToggleFeatureResource);
-  else renderBackground(body, sheet.backgroundDetails, sheet.warnings);
+  else if (options.selectedSection === 'inventory') renderInventory(body, sheet.inventory, options.onToggleEquipment, options.onManageCurrency, options.onManageItems);
+  else if (options.selectedSection === 'spells') renderSpells(body, sheet.spells, options.onToggleSpellSlot, options.onToggleSpellUse, options.onManageSpells, options.onToggleSpellPreparation);
+  else if (options.selectedSection === 'features-and-traits') renderFeatures(body, sheet.features);
+  else if (options.selectedSection === 'actions') renderActions(body, sheet.actions, options.onToggleFeatureResource);
+  else renderBackground(body, sheet.backgroundDetails);
 }
 
 function renderHeader(root: HTMLElement, sheet: CharacterSheetProjection, options: CharacterSheetRenderOptions): void {
@@ -60,8 +61,9 @@ function renderHeader(root: HTMLElement, sheet: CharacterSheetProjection, option
 
   const facts = header.createDiv({ cls: 'guided-character-sheet__sheet-facts' });
   renderFact(facts, 'Prof. bonus', sheet.header.proficiencyBonus, formatModifier);
-  renderFact(facts, 'Speed', sheet.header.speed, String);
-  renderFact(facts, 'Initiative', sheet.header.initiative, formatModifier);
+  renderSpeedFact(facts, sheet.header.speed, sheet.header.speedDetails);
+  const initiative = renderFact(facts, 'Initiative', sheet.header.initiative, formatModifier);
+  for (const annotation of sheet.header.initiativeAnnotations ?? []) renderRollAnnotation(initiative, 'initiative', annotation);
   renderFact(facts, 'Armor class', sheet.header.armorClass, String);
   renderHitPointFact(facts, sheet.header.hitPoints, options.onAdjustHitPoints);
   renderInspirationFact(facts, sheet.header.inspiration, options.onToggleInspiration);
@@ -111,10 +113,34 @@ function renderInspirationFact(root: HTMLElement, value: SheetValue<boolean>, on
   if (enabled) checkbox.addEventListener('change', () => onToggle(checkbox.checked));
 }
 
-function renderFact<T>(root: HTMLElement, label: string, value: SheetValue<T>, format: (value: T) => string): void {
+function renderFact<T>(root: HTMLElement, label: string, value: SheetValue<T>, format: (value: T) => string): HTMLDivElement {
   const fact = root.createDiv({ cls: 'guided-character-sheet__sheet-fact' });
   fact.createSpan({ text: label, cls: 'guided-character-sheet__sheet-fact-label' });
   renderSheetValue(fact, label, value, format);
+  return fact;
+}
+
+function renderSpeedFact(root: HTMLElement, speed: SheetValue<string>, details?: SheetValue<string>): void {
+  const fact = root.createDiv({ cls: 'guided-character-sheet__sheet-fact' });
+  fact.createSpan({ text: 'Speed', cls: 'guided-character-sheet__sheet-fact-label' });
+  const value = fact.createDiv({ cls: 'guided-character-sheet__speed-value' });
+  renderSheetValue(value, 'Speed', speed, String);
+  if (details?.kind !== 'available') return;
+  const disclosure = value.createEl('details', { cls: 'guided-character-sheet__speed-disclosure' });
+  const indicator = disclosure.createEl('summary', {
+    text: 'ⓘ',
+    cls: 'guided-character-sheet__speed-details',
+    attr: { 'aria-label': `Speed details: ${details.value}` },
+  });
+  setTooltip(indicator, details.value);
+  disclosure.createDiv({ text: details.value, cls: 'guided-character-sheet__speed-disclosure-content' });
+}
+
+function renderRollAnnotation(root: HTMLElement, check: string, annotation: { marker: 'A' | 'D'; source: string }): void {
+  const text = annotation.marker === 'A' ? 'Advantage' : 'Disadvantage';
+  const marker = root.createSpan({ text: annotation.marker, cls: annotation.marker === 'A' ? 'guided-character-sheet__advantage' : 'guided-character-sheet__disadvantage' });
+  marker.setAttribute('aria-label', `${text} on ${check} from ${annotation.source}`);
+  marker.setAttribute('title', `${text} from ${annotation.source}`);
 }
 
 function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): void {
@@ -133,9 +159,7 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
     renderProficiency(row, `${save.label} saving throw`, save.proficient);
     row.createSpan({ text: save.label, cls: 'guided-character-sheet__sheet-row-label' });
     for (const annotation of save.annotations ?? []) {
-      const marker = row.createSpan({ text: annotation.marker, cls: annotation.marker === 'A' ? 'guided-character-sheet__advantage' : 'guided-character-sheet__disadvantage' });
-      marker.setAttribute('aria-label', `${annotation.marker === 'A' ? 'Advantage' : 'Disadvantage'} on ${save.label} saving throw from ${annotation.source}`);
-      marker.setAttribute('title', `${annotation.marker === 'A' ? 'Advantage' : 'Disadvantage'} from ${annotation.source}`);
+      renderRollAnnotation(row, `${save.label} saving throw`, annotation);
     }
     renderSheetValue(row, `${save.label} saving throw modifier`, save.modifier, formatModifier);
   }
@@ -152,6 +176,7 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
     const ability = skill.ability.kind === 'available' ? skill.ability.value.toUpperCase() : '—';
     row.createSpan({ text: ability, cls: 'guided-character-sheet__sheet-row-ability' });
     row.createSpan({ text: skill.label, cls: 'guided-character-sheet__sheet-row-label' });
+    for (const annotation of skill.annotations ?? []) renderRollAnnotation(row, `${skill.label} skill`, annotation);
     if (skill.disadvantageSources.length > 0) {
       const indicator = row.createSpan({ text: 'Disadvantage', cls: 'guided-character-sheet__disadvantage' });
       indicator.createSpan({ text: `${skill.label} disadvantage: ${skill.disadvantageSources.join(', ')}.`, cls: 'guided-character-sheet__visually-hidden' });
@@ -179,6 +204,10 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
     resistances.createSpan({ text: 'Damage resistances', cls: 'guided-character-sheet__sheet-row-label' });
     resistances.createSpan({ text: sheet.defenses.resistances.length === 0 ? 'None' : sheet.defenses.resistances.map((resistance) => resistance.damageType).join(', ') });
     for (const resistance of sheet.defenses.resistances) resistances.createSpan({ text: `${resistance.damageType}: ${resistance.source}`, cls: 'guided-character-sheet__visually-hidden' });
+    const immunities = defenses.createDiv({ cls: 'guided-character-sheet__sheet-row' });
+    immunities.createSpan({ text: 'Condition immunities', cls: 'guided-character-sheet__sheet-row-label' });
+    immunities.createSpan({ text: sheet.defenses.immunities.length === 0 ? 'None' : sheet.defenses.immunities.map((immunity) => immunity.condition).join(', ') });
+    for (const immunity of sheet.defenses.immunities) immunities.createSpan({ text: `${immunity.condition}: ${immunity.source}`, cls: 'guided-character-sheet__visually-hidden' });
   }
 
   if (sheet.warnings.length > 0) {
@@ -187,11 +216,11 @@ function renderAbilities(root: HTMLElement, sheet: CharacterSheetProjection): vo
   }
 }
 
-function renderInventory(root: HTMLElement, inventory: InventorySheetProjection, warnings: string[], onToggleEquipment?: (entryId: string, equipped: boolean) => void, onManageCurrency?: () => void, onManageItems?: () => void): void {
+function renderInventory(root: HTMLElement, inventory: InventorySheetProjection, onToggleEquipment?: (entryId: string, equipped: boolean) => void, onManageCurrency?: () => void, onManageItems?: () => void): void {
   const section = createSection(root, 'Inventory', { label: 'Manage items', onClick: onManageItems });
   if (inventory.kind === 'missing') {
     renderSheetValue(section, 'Inventory', inventory, () => '');
-    renderInventoryWarnings(section, warnings);
+    renderInventoryWarnings(section, inventory.warnings);
     return;
   }
 
@@ -218,7 +247,7 @@ function renderInventory(root: HTMLElement, inventory: InventorySheetProjection,
     const rows = [...inventory.rows].sort((left, right) => left.name.localeCompare(right.name) || left.entryId.localeCompare(right.entryId));
     for (const row of rows) renderInventoryRow(list, row, onToggleEquipment);
   }
-  renderInventoryWarnings(section, warnings);
+  renderInventoryWarnings(section, inventory.warnings);
 }
 
 function renderInventoryWarnings(root: HTMLElement, warnings: string[]): void {
@@ -263,9 +292,9 @@ function renderInventoryAction(root: HTMLElement, itemName: string, action: Inve
   if (onClick !== undefined) button.addEventListener('click', onClick);
 }
 
-function renderSpells(root: HTMLElement, spells: CharacterSheetProjection['spells'], warnings: string[], onToggleSpellSlot?: (level: number, spent: boolean) => void, onToggleSpellUse?: (key: string, spent: boolean) => void, onManageSpells?: () => void, onToggleSpellPreparation?: (source: FoundrySourceReference, prepared: boolean) => void): void {
+function renderSpells(root: HTMLElement, spells: CharacterSheetProjection['spells'], onToggleSpellSlot?: (level: number, spent: boolean) => void, onToggleSpellUse?: (key: string, spent: boolean) => void, onManageSpells?: () => void, onToggleSpellPreparation?: (source: FoundrySourceReference, prepared: boolean) => void): void {
   const section = createSection(root, 'Spells', { label: 'Manage spells', onClick: onManageSpells });
-  if (spells === undefined || spells.kind === 'empty') { renderMissing(section, 'Spells', spells?.reason ?? 'Spellcasting progression is unavailable.'); renderWarnings(section, [...warnings, ...(spells?.warnings ?? [])]); return; }
+  if (spells === undefined || spells.kind === 'empty') { renderMissing(section, 'Spells', spells?.reason ?? 'Spellcasting progression is unavailable.'); renderWarnings(section, spells?.warnings ?? []); return; }
   const summary = section.createDiv({ cls: 'guided-character-sheet__spell-summary' });
   renderSpellFact(summary, 'Ability', spells.castingAbility, spellAbilityLabel);
   renderSpellFact(summary, 'Modifier', spells.spellModifier, formatModifier);
@@ -300,7 +329,7 @@ function renderSpells(root: HTMLElement, spells: CharacterSheetProjection['spell
       renderSheetValue(row, `${spell.name} source`, spell.source, (source) => source.sourcePath);
     }
   }
-  renderWarnings(section, [...warnings, ...spells.warnings]);
+  renderWarnings(section, spells.warnings);
 }
 
 function recoveryLabel(period: string): string { return ({ lr: 'long rest', sr: 'short rest', day: 'day' } as Record<string, string>)[period] ?? period; }
@@ -379,9 +408,9 @@ function spellDetails(source: Extract<SpellSheetRow['source'], { kind: 'availabl
   return details;
 }
 
-function renderFeatures(root: HTMLElement, features: CharacterSheetProjection['features'], warnings: string[]): void {
+function renderFeatures(root: HTMLElement, features: CharacterSheetProjection['features']): void {
   const section = createSection(root, 'Features and traits');
-  if (features === undefined) { renderMissing(section, 'Features', 'Feature sources are unavailable.'); renderWarnings(section, warnings); return; }
+  if (features === undefined) { renderMissing(section, 'Features', 'Feature sources are unavailable.'); return; }
   for (const group of features.groups) {
     const groupRoot = createSubsection(section, group.label);
     if (group.entries.length === 0) { groupRoot.createDiv({ text: 'None', cls: 'guided-character-sheet__empty-state' }); continue; }
@@ -393,12 +422,12 @@ function renderFeatures(root: HTMLElement, features: CharacterSheetProjection['f
       for (const diagnostic of entry.diagnostics) row.createDiv({ text: diagnostic, cls: 'guided-character-sheet__warning' });
     }
   }
-  renderWarnings(section, [...features.warnings, ...warnings]);
+  renderWarnings(section, features.warnings);
 }
 
-function renderActions(root: HTMLElement, actions: CharacterSheetProjection['actions'], warnings: string[], onToggleResource?: (key: string, spent: boolean) => void): void {
+function renderActions(root: HTMLElement, actions: CharacterSheetProjection['actions'], onToggleResource?: (key: string, spent: boolean) => void): void {
   const section = createSection(root, 'Actions');
-  if (actions === undefined) { renderMissing(section, 'Actions', 'Action sources are unavailable.'); renderWarnings(section, warnings); return; }
+  if (actions === undefined) { renderMissing(section, 'Actions', 'Action sources are unavailable.'); return; }
   for (const group of actions.groups) {
     const groupRoot = createSubsection(section, group.label);
     if (group.entries.length === 0) { groupRoot.createDiv({ text: 'None', cls: 'guided-character-sheet__empty-state' }); continue; }
@@ -447,7 +476,7 @@ function renderActions(root: HTMLElement, actions: CharacterSheetProjection['act
       row.createDiv({ text: rule.description ?? 'Source description is unavailable.', cls: 'guided-character-sheet__action-description' });
     }
   }
-  renderWarnings(section, [...actions.warnings, ...warnings]);
+  renderWarnings(section, actions.warnings);
 }
 
 function renderActionFact<T>(root: HTMLElement, label: string, value: SheetValue<T>, format: (value: T) => string, accessibleLabel: string): void {
@@ -456,14 +485,14 @@ function renderActionFact<T>(root: HTMLElement, label: string, value: SheetValue
   renderSheetValue(fact, accessibleLabel, value, format);
 }
 
-function renderBackground(root: HTMLElement, background: CharacterSheetProjection['backgroundDetails'], warnings: string[]): void {
+function renderBackground(root: HTMLElement, background: CharacterSheetProjection['backgroundDetails']): void {
   const section = createSection(root, 'Background');
-  if (background === undefined) { renderMissing(section, 'Background', 'Background source is unavailable.'); renderWarnings(section, warnings); return; }
+  if (background === undefined) { renderMissing(section, 'Background', 'Background source is unavailable.'); return; }
   if (background.source.kind === 'available') section.createEl('h4', { text: background.source.value.name });
   renderBackgroundFact(section, 'Description', background.sourceFacts.description, String);
   const biography = createSubsection(section, 'Biography');
   biography.createDiv({ text: 'Biography is not yet provided or stored.', cls: 'guided-character-sheet__coming-soon' });
-  renderWarnings(section, [...background.warnings, ...warnings]);
+  renderWarnings(section, background.warnings);
 }
 
 function renderBackgroundFact<T>(root: HTMLElement, label: string, value: SheetValue<T>, format: (value: T) => string): void {

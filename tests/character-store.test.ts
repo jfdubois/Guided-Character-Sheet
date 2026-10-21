@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TFile } from 'obsidian';
 import { CharacterStore } from '../src/character-store';
 import { withClassProgression, withOrigin, withRuleset, withSpeciesConfiguration } from '../src/character-model';
@@ -47,6 +47,35 @@ describe('character store', () => {
     expect(selected.ruleset).toBe('2024');
     const current = await store.update(created, (document) => withOrigin(document, { sourcePath: 'packs/_source/origins24/species/elf.yml', identifier: 'elf', id: 'elf-id' }));
     expect(current.origin?.identifier).toBe('elf');
+  });
+
+  it('updates only when the file still matches the expected saved document', async () => {
+    const vault = fakeVault();
+    const store = new CharacterStore(vault, 'Characters');
+    const created = await store.create('Ayla', snapshot);
+    const expected = await store.read(created);
+    const update = vi.fn((document) => withRuleset(document, '2024'));
+
+    const updated = await store.updateIfUnchanged(created, expected, update);
+
+    expect(updated.ruleset).toBe('2024');
+    expect(update).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an external edit without invoking the update callback or overwriting it', async () => {
+    const vault = fakeVault();
+    const store = new CharacterStore(vault, 'Characters');
+    const created = await store.create('Ayla', snapshot);
+    const expected = await store.read(created);
+    const external = withRuleset(expected, '2024');
+    vault.files.set(created.path, `${JSON.stringify(external, null, 2)}\n`);
+    const before = await vault.read(created);
+    const update = vi.fn((document) => withOrigin(document, { sourcePath: 'species/new.yml', identifier: 'new', id: 'new' }));
+
+    await expect(store.updateIfUnchanged(created, expected, update)).rejects.toThrow('changed externally');
+
+    expect(update).not.toHaveBeenCalled();
+    expect(await vault.read(created)).toBe(before);
   });
 
   it('round-trips origin and Foundry provenance without embedding source data', async () => {

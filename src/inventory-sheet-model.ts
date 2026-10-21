@@ -62,7 +62,7 @@ const WEAPON_CATEGORY_LABELS: Readonly<Record<string, string>> = {
   siege: 'siege weapon',
 };
 
-export function projectInventorySheet(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier?: number, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk'; secondaryModifier: number }): InventorySheetProjection {
+export function projectInventorySheet(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier?: number, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk' | 'unarmoredBard' | 'draconic'; secondaryModifier: number; base?: number }): InventorySheetProjection {
   const mutable = document.mutable;
   if (mutable === undefined) return { kind: 'missing', reason: 'Mutable inventory is not available from character finalization.', warnings: [] };
   const warnings: string[] = [];
@@ -80,7 +80,7 @@ export function projectInventorySheet(document: CharacterDocument, resolvedItems
   };
 }
 
-function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier: number | undefined, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk'; secondaryModifier: number }): InventoryArmorEffects {
+function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInventoryItems, dexterityModifier: number | undefined, unarmoredDefense?: { calculation: 'unarmoredBarb' | 'unarmoredMonk' | 'unarmoredBard' | 'draconic'; secondaryModifier: number; base?: number }): InventoryArmorEffects {
   const mutable = document.mutable;
   if (mutable === undefined) return { armorClass: { kind: 'missing', reason: 'Mutable inventory is not available from character finalization.' }, stealthDisadvantageSources: [] };
   const equippedArmor: Array<{ name: string; capabilities: RowCapabilities }> = [];
@@ -123,7 +123,7 @@ function projectArmor(document: CharacterDocument, resolvedItems: ResolvedInvent
   const shield = equippedShields[0]?.capabilities.armor;
   if (equippedShields.length === 1 && shield === undefined) return { armorClass: { kind: 'missing', reason: 'Equipped shield armor value is unavailable.' }, stealthDisadvantageSources: sources };
   if (unarmoredDefense !== undefined && equippedArmor.length === 0 && !(unarmoredDefense.calculation === 'unarmoredMonk' && equippedShields.length > 0)) {
-    return { armorClass: { kind: 'available', value: 10 + dexterityModifier + unarmoredDefense.secondaryModifier + (shield?.value ?? 0) }, stealthDisadvantageSources: sources };
+    return { armorClass: { kind: 'available', value: (unarmoredDefense.base ?? 10) + dexterityModifier + unarmoredDefense.secondaryModifier + (shield?.value ?? 0) }, stealthDisadvantageSources: sources };
   }
   const dexterity = equippedArmor[0]?.capabilities.category === 'heavy' ? 0 : armor?.dex === undefined ? dexterityModifier : Math.min(dexterityModifier, armor.dex);
   return { armorClass: { kind: 'available', value: (armor?.value ?? 10) + dexterity + (shield?.value ?? 0) }, stealthDisadvantageSources: sources };

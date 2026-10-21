@@ -8,6 +8,7 @@ import { ABILITIES, isValidRolledBase, pointBuyTotal, validateAbilityScores, typ
 import { createBackgroundAbilitySelection, validateBackgroundAbilitySelection, type BackgroundAbilityConfiguration, type BackgroundAbilitySelection } from './background-ability-configuration';
 import { isMutableCharacterState, type MutableCharacterState } from './mutable-character-state';
 import { isFoundrySourceReference, isSafeSourcePath } from './foundry-source-reference';
+import { isClassHitPointEntry, type ClassHitPointEntry } from './class-hit-points';
 import { restoreGrantedFeatConfiguration, toGrantedFeatSelection, validateGrantedFeatConfiguration, type GrantedFeatConfiguration, type GrantedFeatSelection } from './granted-feat-configuration';
 
 export type CharacterRuleset = '2014' | '2024';
@@ -51,6 +52,7 @@ export interface CharacterDocument {
   origin?: CharacterOriginReference;
   speciesConfiguration?: SpeciesConfigurationSelection;
   classProgressions?: ClassProgressionSelection[];
+  classHitPoints?: ClassHitPointEntry[];
   background?: CharacterBackgroundReference;
   backgroundChoices?: BackgroundChoicesSelection;
   classEquipment?: EquipmentSelection;
@@ -83,6 +85,7 @@ export function parseCharacterDocument(value: unknown): CharacterDocument {
   if (value.abilityScores !== undefined && !isAbilityScoreSelection(value.abilityScores)) throw new Error('Invalid character document');
   if (value.abilityScoreDraft !== undefined && ((!isStandardArrayDraft(value.abilityScoreDraft) && !isRolledAbilityDraft(value.abilityScoreDraft) && !isPointBuyDraft(value.abilityScoreDraft) || isPointBuyDraft(value.abilityScoreDraft) && pointBuyTotal(value.abilityScoreDraft.base) === 27) || value.abilityScores !== undefined)) throw new Error('Invalid character document');
   if (value.mutable !== undefined && !isMutableCharacterState(value.mutable)) throw new Error('Invalid character document');
+  if (value.classHitPoints !== undefined && !isEffectiveClassHitPointLedger(value.classHitPoints, value.classProgressions)) throw new Error('Invalid character document');
   const savedSpeciesConfiguration = value.speciesConfiguration;
   if (savedSpeciesConfiguration !== undefined && !isSpeciesConfigurationSelection(savedSpeciesConfiguration)) throw new Error('Invalid character document');
   if (savedSpeciesConfiguration !== undefined && (!isOriginReference(value.origin) || savedSpeciesConfiguration.origin.id !== value.origin.id)) throw new Error('Invalid character document');
@@ -99,7 +102,16 @@ function sanitizeCharacterDocument(document: CharacterDocument): CharacterDocume
   if (next.abilityScoreDraft?.method === 'point-buy') next.abilityScoreDraft = { method: 'point-buy', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
   else if (next.abilityScoreDraft?.method === 'standard-array') next.abilityScoreDraft = { method: 'standard-array', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
   else if (next.abilityScoreDraft?.method === 'dice-rolling') next.abilityScoreDraft = { method: 'dice-rolling', base: { ...next.abilityScoreDraft.base }, manual: { ...next.abilityScoreDraft.manual } };
-  if (next.classProgressions !== undefined) next.classProgressions = next.classProgressions.map((progression) => ({ ...progression, selections: progression.selections.map((selection) => selection.kind === 'spell' && selection.selectionRole === undefined ? { ...selection, selectionRole: selection.level === 0 ? 'cantrips-known' : 'known-spells' } : selection) }));
+  if (next.classProgressions !== undefined) next.classProgressions = next.classProgressions.map((progression) => ({
+    ...progression,
+    ...(progression.subclass === undefined ? {} : { subclass: sanitizeSourceReference(progression.subclass) }),
+    selections: progression.selections.map((selection) => {
+      if (selection.kind === 'spell' && selection.selectionRole === undefined) return { ...selection, selectionRole: selection.level === 0 ? 'cantrips-known' as const : 'known-spells' as const };
+      if (selection.kind === 'subclass') return { ...selection, options: selection.options.map(sanitizeSourceReference), ...(selection.selected === undefined ? {} : { selected: sanitizeSourceReference(selection.selected) }) };
+      return selection;
+    }),
+  }));
+  if (next.classHitPoints !== undefined) next.classHitPoints = next.classHitPoints.map((entry) => ({ ...entry }));
   if (next.mutable !== undefined) next.mutable = { ...next.mutable, ...(next.mutable.hitPoints === undefined ? {} : { hitPoints: { ...next.mutable.hitPoints, temporary: next.mutable.hitPoints.temporary ?? 0 } }), ...(next.mutable.hitDice === undefined ? {} : { hitDice: next.mutable.hitDice.map((pool) => ({ ...pool })) }), preparedSpells: next.mutable.preparedSpells.map(sanitizeSourceReference), inventory: { ...next.mutable.inventory, items: next.mutable.inventory.items.map(sanitizeInventoryEntry) }, equipmentStatus: next.mutable.equipmentStatus.map((status) => ({ ...status })), resources: next.mutable.resources.map((resource) => ({ ...resource, ...(resource.recovery === undefined ? {} : { recovery: resource.recovery.map((profile) => ({ ...profile })) }) })), ...(next.mutable.spellSlots === undefined ? {} : { spellSlots: next.mutable.spellSlots.map((slot) => ({ ...slot, ...(slot.recovery === undefined ? {} : { recovery: [...slot.recovery] }) })) }), ...(next.mutable.spellUses === undefined ? {} : { spellUses: next.mutable.spellUses.map((use) => ({ ...use, ...(use.recovery === undefined ? {} : { recovery: use.recovery.map((profile) => ({ ...profile })) }) })) }), ...(next.mutable.spellOverlay === undefined ? {} : { spellOverlay: { added: next.mutable.spellOverlay.added.map((entry) => ({ reference: sanitizeSourceReference(entry.reference), ownership: entry.ownership })), removed: next.mutable.spellOverlay.removed.map(sanitizeSourceReference) } }) };
   return next;
 }
@@ -164,6 +176,7 @@ export function withRuleset(document: CharacterDocument, ruleset: CharacterRules
   delete next.origin;
   delete next.speciesConfiguration;
   delete next.classProgressions;
+  delete next.classHitPoints;
   delete next.background;
   delete next.backgroundChoices;
   delete next.classEquipment;
@@ -182,6 +195,7 @@ export function withOrigin(document: CharacterDocument, origin: CharacterOriginR
   const originChanged = current.origin?.id !== origin.id || current.origin.sourcePath !== origin.sourcePath || current.origin.identifier !== origin.identifier;
   if (originChanged) delete next.speciesConfiguration;
   if (originChanged) delete next.classProgressions;
+  if (originChanged) delete next.classHitPoints;
   if (originChanged) delete next.background;
   if (originChanged) delete next.backgroundChoices;
   if (originChanged) { delete next.classEquipment; delete next.backgroundEquipment; delete next.inventory; }
@@ -196,6 +210,7 @@ export function withClassProgression(document: CharacterDocument, progression: C
   const classChanged = currentClass !== undefined && (currentClass.sourcePath !== progression.class.sourcePath || currentClass.identifier !== progression.class.identifier || currentClass.id !== progression.class.id);
   const next = { ...current, step: classChanged || current.background === undefined ? 'class' as const : 'background' as const, classProgressions: [structuredClone(progression)] };
   if (classChanged) {
+    delete next.classHitPoints;
     delete next.background;
     delete next.backgroundChoices;
   }
@@ -212,6 +227,19 @@ export function withClassProgression(document: CharacterDocument, progression: C
     else next.inventory = inventory;
   }
   return next;
+}
+
+function isEffectiveClassHitPointLedger(value: unknown, progressions: unknown): value is ClassHitPointEntry[] {
+  if (!Array.isArray(progressions) || !isRecord(progressions[0])) return false;
+  const progression = progressions[0];
+  if (!isRecord(progression.class) || typeof progression.class.sourcePath !== 'string' || typeof progression.targetLevel !== 'number' || !Number.isInteger(progression.targetLevel)) return false;
+  const classSourcePath = progression.class.sourcePath;
+  const targetLevel = progression.targetLevel;
+  if (!Array.isArray(value) || targetLevel < 1 || value.length !== targetLevel) return false;
+  return value.every((entry, index) => isClassHitPointEntry(entry)
+    && entry.classSourcePath === classSourcePath
+    && entry.level === index + 1
+    && (index === 0 ? entry.value === 'max' : entry.value !== 'max'));
 }
 export function withBackground(document: CharacterDocument, background: CharacterBackgroundReference): CharacterDocument {
   const current = parseCharacterDocument(document);
@@ -434,7 +462,7 @@ function isClassAdvancementSelection(value: unknown): boolean {
   if (value.kind === 'trait') return isStringArray(value.selected) && isOptionalStringArray(value.configuredPool);
   if (value.kind === 'expertise') return value.mode === 'expertise' && isStringArray(value.selected) && isOptionalStringArray(value.configuredPool);
   if (value.kind === 'item') return isReferenceArray(value.selected) && isOptionalStringArray(value.configuredPool);
-  if (value.kind === 'spell') return isReferenceArray(value.selected) && isOptionalStringArray(value.configuredPool) && (value.selectionRole === undefined || value.selectionRole === 'cantrips-known' || value.selectionRole === 'known-spells' || value.selectionRole === 'spellbook') && (value.ability === undefined || typeof value.ability === 'string') && (value.selectedAbility === undefined || typeof value.selectedAbility === 'string') && (value.count === undefined || typeof value.count === 'number' && Number.isInteger(value.count) && value.count >= 0) && (value.level === undefined || typeof value.level === 'number' && Number.isInteger(value.level) && value.level >= 0) && isOptionalStringArray(value.spellLists);
+  if (value.kind === 'spell') return isReferenceArray(value.selected) && isOptionalStringArray(value.configuredPool) && (value.selectionRole === undefined || value.selectionRole === 'cantrips-known' || value.selectionRole === 'known-spells' || value.selectionRole === 'spellbook') && (value.ability === undefined || typeof value.ability === 'string') && (value.selectedAbility === undefined || typeof value.selectedAbility === 'string') && (value.count === undefined || typeof value.count === 'number' && Number.isInteger(value.count) && value.count >= 0) && (value.level === undefined || typeof value.level === 'number' && Number.isInteger(value.level) && (value.level >= 0 || value.level === -1 && value.selectionRole === 'spellbook' && typeof value.maxLevel === 'number' && Number.isInteger(value.maxLevel) && value.maxLevel >= 1)) && (value.maxLevel === undefined || typeof value.maxLevel === 'number' && Number.isInteger(value.maxLevel) && value.maxLevel >= 1) && isOptionalStringArray(value.spellLists);
   if (value.kind === 'subclass') return isReferenceArray(value.options) && (value.selected === undefined || isFoundrySourceReference(value.selected));
   if (value.kind === 'ability-score') return isNumberRecord(value.assignments) && typeof value.points === 'number' && Number.isInteger(value.points) && value.points >= 0 && assignmentsTotal(value.assignments) === value.points && isOptionalStringArray(value.locked) && isOptionalStringArray(value.allowedAbilities) && (value.cap === undefined || typeof value.cap === 'number') && (value.fixed === undefined || isNumberRecord(value.fixed)) && (value.recommendation === undefined || isNumberRecord(value.recommendation)) && (value.feat === undefined || isFoundrySourceReference(value.feat)) && isOptionalReferenceArray(value.featOptions);
   return false;

@@ -16,12 +16,15 @@ describe('pinned 2024 character creation audit', () => {
       .map((invariant) => [invariant, semantic.filter((finding) => finding.invariant === invariant).length]));
     expect(counts).toEqual({});
     expect(semantic).toEqual([]);
-    expect(result.findings).toEqual([expect.objectContaining({
-      invariant: 'resolution.dependency',
-      severity: 'warning',
-      sourceName: 'Monk',
-      nodeId: 'H32KYn1ozuG9jgYH',
-    })]);
+    expect(result.findings.map(({ sourceName, nodeId, observed }) => ({ sourceName, nodeId, observed }))).toEqual([
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstBlindFight: unresolved source UUID' },
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstDueling000: unresolved source UUID' },
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstIntercepti: unresolved source UUID' },
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstProtection: unresolved source UUID' },
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstThrownWeap: unresolved source UUID' },
+      { sourceName: 'Fighter', nodeId: 'F4BJnjlTZ7nAuzjg', observed: 'Compendium.dnd5e.feats24.Item.phbfstUnarmedFig: unresolved source UUID' },
+      { sourceName: 'Monk', nodeId: 'H32KYn1ozuG9jgYH', observed: 'Compendium.dnd5e.classes24.Item.phbmnkSelfrestor: unresolved source UUID' },
+    ]);
     if (result.findings.some((finding) => finding.severity === 'error')) throw new Error(`2024 character-creation audit found ${result.findings.filter((finding) => finding.severity === 'error').length} errors. See the grouped report above.`);
   });
 });
