@@ -991,5 +991,18 @@
 .guided-character-sheet__manage-spells-actions { display: flex; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-2); }
 
 .guided-character-sheet__reset-actions { display: flex; justify-content: flex-end; gap: var(--size-4-2); margin-top: var(--size-4-4); }
-.guided-character-sheet__edit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--size-4-2); margin-block: var(--size-4-3); }
-.guided-character-sheet__edit-actions .guided-character-sheet__hint { flex-basis: 100%; }
+.guided-character-sheet__journey-actions {
+  background: var(--background-primary);
+  border-top: 1px solid var(--background-modifier-border);
+  bottom: 0;
+  box-sizing: border-box;
+  padding: var(--size-4-2) 0;
+  position: sticky;
+  width: 100%;
+  z-index: 5;
+}
+.guided-character-sheet__journey-actions .guided-character-sheet__hint { margin-bottom: var(--size-4-2); }
+.guided-character-sheet__journey-buttons,
+.guided-character-sheet__journey-buttons-right { display: flex; flex-wrap: wrap; gap: var(--size-4-2); }
+.guided-character-sheet__journey-buttons { align-items: center; justify-content: space-between; }
+.guided-character-sheet__journey-buttons-right { margin-left: auto; }

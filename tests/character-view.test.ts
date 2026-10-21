@@ -3038,6 +3038,7 @@ describe('completed character draft editing', () => {
     file.path = 'Characters/ayla.json';
     const persisted = JSON.stringify(saved, null, 2) + '\n';
     let writes = 0;
+    const loadFromState = vi.fn(async () => undefined);
     const context = {
       file,
       document: structuredClone(saved),
@@ -3050,8 +3051,8 @@ describe('completed character draft editing', () => {
       contentEl: { empty: () => undefined, createDiv: () => ({}) },
       store: { updateIfUnchanged: async () => { writes += 1; return saved; } },
       flushPendingUpdate: async () => undefined,
-      leaf: { setViewState: async () => undefined },
-      loadFromState: async () => undefined,
+      leaf: { setViewState: async () => { await loadFromState(); } },
+      loadFromState,
     };
 
     (CharacterView.prototype as unknown as { queueUpdate(this: typeof context, update: (document: CharacterDocument) => CharacterDocument): void }).queueUpdate.call(context, (document: CharacterDocument) => withRuleset(document, '2014'));
@@ -3064,6 +3065,7 @@ describe('completed character draft editing', () => {
     expect(context.document).toEqual(saved);
     expect(JSON.stringify(saved, null, 2) + '\n').toBe(persisted);
     expect(writes).toBe(0);
+    expect(loadFromState).toHaveBeenCalledOnce();
   });
 
   it('requires explicit confirmation for a ruleset or class reset', () => {
@@ -3122,9 +3124,114 @@ describe('completed character draft editing', () => {
       createDiv: (options?: { text?: string }) => { if (options?.text) messages.push(options.text); return makeNode(); },
       createEl: (_tag: string, options?: { text?: string }) => { if (options?.text) labels.push(options.text); return { disabled: false, setAttribute: () => undefined, addEventListener: () => undefined }; },
     });
-    (CharacterView.prototype as unknown as { renderEditDraftActions(this: typeof context, root: HTMLElement): void }).renderEditDraftActions.call(context, makeNode() as unknown as HTMLElement);
+    (CharacterView.prototype as unknown as { renderJourneyActions(this: typeof context, root: HTMLElement): void }).renderJourneyActions.call(context, makeNode() as unknown as HTMLElement);
     expect(messages).toContain('Missing class hit-point entry for level 2.');
     expect(labels).toContain('Cancel');
+  });
+
+  it('shows Delete only for an existing character and the mode-specific completion action on the right', () => {
+    const newRoot = createViewRenderRoot();
+    const draft = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document: createCharacterDocument('Draft', snapshot), completedEditMode: false,
+      finalizeCharacter: vi.fn(), cancelNewCharacter: vi.fn(),
+    });
+    const renderActions = CharacterView.prototype as unknown as { renderJourneyActions(this: Record<string, unknown>, root: HTMLElement): void };
+    renderActions.renderJourneyActions.call(draft, newRoot.root as unknown as HTMLElement);
+    expect(newRoot.text).toContain('Cancel');
+    expect(newRoot.text).toContain('Create');
+    expect(newRoot.text).not.toContain('Delete');
+    expect(newRoot.text).not.toContain('Apply');
+    newRoot.control('Cancel').dispatch('click');
+    expect(draft.cancelNewCharacter).toHaveBeenCalledOnce();
+
+    const editRoot = createViewRenderRoot();
+    const edit = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document: completeDocument(), completedEditMode: true, conflict: false,
+      applyCharacterDraft: vi.fn(), cancelCharacterDraft: vi.fn(), confirmDeleteCharacter: vi.fn(),
+    });
+    renderActions.renderJourneyActions.call(edit, editRoot.root as unknown as HTMLElement);
+    expect(editRoot.text).toEqual(expect.arrayContaining(['Delete', 'Cancel', 'Apply']));
+    expect(editRoot.text).not.toContain('Create');
+    editRoot.control('Delete').dispatch('click');
+    expect(edit.confirmDeleteCharacter).toHaveBeenCalledOnce();
+  });
+
+  it('resets edit mode when the same leaf opens a new unfinished character', async () => {
+    const file = new TFile();
+    file.path = 'Characters/new.json';
+    const draft = createCharacterDocument('New', snapshot);
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      viewState: { mode: 'create', filePath: file.path }, file: new TFile(),
+      completedEditMode: true, savedDocument: completeDocument(), draftApplyError: 'Old error',
+      app: { vault: { getFileByPath: () => file } }, store: { read: async () => draft },
+      render: async () => undefined, renderUnavailable: vi.fn(),
+    });
+    await (CharacterView.prototype as unknown as { loadFromState(this: typeof context): Promise<void> }).loadFromState.call(context);
+    expect(context.completedEditMode).toBe(false);
+    expect(context.savedDocument).toBeUndefined();
+    expect(context.draftApplyError).toBeUndefined();
+  });
+
+  it('keeps creation controls and creation instructions out of the edit summary', () => {
+    const root = createViewRenderRoot();
+    const edit = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      document: completeDocument(), completedEditMode: true,
+    });
+    (CharacterView.prototype as unknown as { renderInventoryStep(this: typeof edit, root: HTMLElement): void }).renderInventoryStep.call(edit, root.root as unknown as HTMLElement);
+    expect(root.text).not.toContain('Create character');
+    expect(root.text.some((text) => text.includes('use Create below'))).toBe(false);
+  });
+
+  it('cancels a new character by trashing its draft file and returning to the picker', async () => {
+    const file = new TFile();
+    file.path = 'Characters/draft.json';
+    const trashFile = vi.fn(async () => undefined);
+    const loadFromState = vi.fn(async () => undefined);
+    const setViewState = vi.fn(async () => { await loadFromState(); });
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      file, document: createCharacterDocument('Draft', snapshot), completedEditMode: false,
+      app: { fileManager: { trashFile } }, leaf: { setViewState },
+      flushPendingUpdate: async () => undefined, loadFromState,
+      renderUnavailable: vi.fn(),
+    });
+    await (CharacterView.prototype as unknown as { cancelNewCharacter(this: typeof context): Promise<void> }).cancelNewCharacter.call(context);
+    expect(trashFile).toHaveBeenCalledWith(file);
+    expect(setViewState).toHaveBeenCalledWith({ type: 'guided-character-sheet', state: { mode: 'open', section: 'abilities' }, active: true });
+    expect(loadFromState).toHaveBeenCalledOnce();
+  });
+
+  it('deletes an existing character only after confirmation through the Obsidian trash API', async () => {
+    const file = new TFile();
+    file.path = 'Characters/ayla.json';
+    const trashFile = vi.fn(async () => undefined);
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      file, document: completeDocument(), completedEditMode: true, app: { fileManager: { trashFile } },
+      flushPendingUpdate: async () => undefined, leaf: { setViewState: async () => undefined },
+      loadFromState: async () => undefined, renderUnavailable: vi.fn(),
+    });
+    let modal: CharacterResetModal | undefined;
+    const open = vi.spyOn(CharacterResetModal.prototype, 'open').mockImplementation(function(this: CharacterResetModal) { modal = this; return this; });
+    try {
+      (CharacterView.prototype as unknown as { confirmDeleteCharacter(this: typeof context): void }).confirmDeleteCharacter.call(context);
+      expect(trashFile).not.toHaveBeenCalled();
+      (modal as unknown as { onConfirm(): void }).onConfirm();
+      await vi.waitFor(() => expect(trashFile).toHaveBeenCalledWith(file));
+    } finally { open.mockRestore(); }
+  });
+
+  it('does not offer deletion for an unfinished character', () => {
+    const file = new TFile();
+    file.path = 'Characters/draft.json';
+    const context = Object.assign(Object.create(CharacterView.prototype) as Record<string, unknown>, {
+      file, document: createCharacterDocument('Draft', snapshot), completedEditMode: false,
+      app: {},
+    });
+    let modal: CharacterResetModal | undefined;
+    const open = vi.spyOn(CharacterResetModal.prototype, 'open').mockImplementation(function(this: CharacterResetModal) { modal = this; return this; });
+    try {
+      (CharacterView.prototype as unknown as { confirmDeleteCharacter(this: typeof context): void }).confirmDeleteCharacter.call(context);
+      expect(modal).toBeUndefined();
+    } finally { open.mockRestore(); }
   });
 });
 

@@ -793,11 +793,17 @@ export class CharacterView extends ItemView {
     if (state.mode === 'open') { this.completedEditMode = false; this.savedDocument = undefined; this.inactiveClassHitPoints = []; this.draftClassHitPoints = []; this.draftApplyError = undefined; this.conflict = false; }
     const file = this.app.vault.getFileByPath(state.filePath);
     if (!(file instanceof TFile)) { this.renderUnavailable('The character file could not be found.'); return; }
-    if (this.file?.path !== file.path) this.classLevelPreview = undefined;
+    if (this.file?.path !== file.path) {
+      this.classLevelPreview = undefined;
+      this.inactiveClassHitPoints = [];
+      this.draftClassHitPoints = [];
+      this.draftApplyError = undefined;
+      this.conflict = false;
+    }
     this.file = file;
     try {
       const loaded = await this.store.read(file);
-      if ((this.completedEditMode || state.mode === 'create') && loaded.mutable !== undefined) {
+      if (state.mode === 'create' && loaded.mutable !== undefined) {
         this.completedEditMode = true;
         this.savedDocument = structuredClone(loaded);
         const savedHitPoints = loaded.classHitPoints ?? (loaded.classProgressions?.[0] === undefined ? [] : [{ classSourcePath: loaded.classProgressions[0].class.sourcePath, level: 1, value: 'max' as const }]);
@@ -805,8 +811,9 @@ export class CharacterView extends ItemView {
         this.draftClassHitPoints = structuredClone(savedHitPoints);
         this.document = structuredClone(loaded);
       } else {
+        this.completedEditMode = false;
         this.document = loaded;
-        if (!this.completedEditMode) this.savedDocument = undefined;
+        this.savedDocument = undefined;
       }
       await this.render();
     } catch (error) { this.renderUnavailable(error instanceof Error ? error.message : String(error)); }
@@ -818,9 +825,9 @@ export class CharacterView extends ItemView {
     const root = this.contentEl.createDiv({ cls: 'guided-character-sheet' });
     if (this.viewState?.mode === 'open') { await this.renderOpenCharacterSheet(root); return; }
     root.createEl('h2', { text: this.document.name, cls: 'guided-character-sheet__name' });
-    if (this.completedEditMode) this.renderEditDraftActions(root);
     root.createDiv({ text: 'Build your character one choice at a time.', cls: 'guided-character-sheet__step' });
     await this.renderCreationJourney(root);
+    this.renderJourneyActions(root);
   }
 
   private async renderOpenCharacterSheet(root: HTMLElement): Promise<void> {
@@ -1221,16 +1228,54 @@ export class CharacterView extends ItemView {
     this.renderJourneyNavigation(panel, sections, current);
   }
 
-  private renderEditDraftActions(root: HTMLElement): void {
-    const actions = root.createDiv({ cls: 'guided-character-sheet__edit-actions' });
-    const apply = actions.createEl('button', { text: 'Apply', cls: 'mod-cta', attr: { type: 'button' } });
-    apply.disabled = this.conflict || this.document?.classProgressions?.length !== 1;
-    apply.setAttribute('aria-label', 'Apply character changes');
-    if (this.draftApplyError !== undefined) actions.createDiv({ text: this.draftApplyError, cls: 'guided-character-sheet__warning', attr: { role: 'alert' } });
-    actions.createDiv({ text: this.conflict ? 'This character changed externally. Cancel and reopen it before editing.' : 'Apply validates the selected level, choices, and hit-point gains while preserving your current resources and hit points.', cls: 'guided-character-sheet__hint' });
-    apply.addEventListener('click', () => { void this.applyCharacterDraft(); });
-    const cancel = actions.createEl('button', { text: 'Cancel', cls: 'mod-muted', attr: { type: 'button' } });
-    cancel.addEventListener('click', () => { void this.cancelCharacterDraft(); });
+  private renderJourneyActions(root: HTMLElement): void {
+    const footer = root.createDiv({ cls: 'guided-character-sheet__journey-actions' });
+    if (this.draftApplyError !== undefined) footer.createDiv({ text: this.draftApplyError, cls: 'guided-character-sheet__warning', attr: { role: 'alert' } });
+    if (this.completedEditMode) footer.createDiv({ text: this.conflict ? 'This character changed externally. Cancel and reopen it before editing.' : 'Apply validates the selected level, choices, and hit-point gains while preserving your current resources and hit points.', cls: 'guided-character-sheet__hint' });
+    const buttons = footer.createDiv({ cls: 'guided-character-sheet__journey-buttons' });
+    if (this.completedEditMode) {
+      const remove = buttons.createEl('button', { text: 'Delete', cls: 'mod-warning', attr: { type: 'button' } });
+      remove.addEventListener('click', () => this.confirmDeleteCharacter());
+    }
+    const right = buttons.createDiv({ cls: 'guided-character-sheet__journey-buttons-right' });
+    const cancel = right.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
+    cancel.addEventListener('click', () => { void (this.completedEditMode ? this.cancelCharacterDraft() : this.cancelNewCharacter()); });
+    const apply = right.createEl('button', { text: this.completedEditMode ? 'Apply' : 'Create', cls: 'mod-cta', attr: { type: 'button' } });
+    apply.disabled = this.completedEditMode ? this.conflict || this.document?.classProgressions?.length !== 1 : this.document === null || !isReadyForCharacterCreation(this.document);
+    apply.addEventListener('click', () => { void (this.completedEditMode ? this.applyCharacterDraft() : this.finalizeCharacter()); });
+  }
+
+  private async cancelNewCharacter(): Promise<void> {
+    await this.flushPendingUpdate();
+    if (this.file === null || this.completedEditMode) return;
+    await this.trashCharacter(this.file);
+  }
+
+  private confirmDeleteCharacter(): void {
+    if (this.file === null || !this.completedEditMode) return;
+    new CharacterResetModal(this.app, 'Delete character?', `Move ${this.document?.name ?? 'this character'} to the trash?`, 'Delete character', () => { void this.deleteCharacter(); }).open();
+  }
+
+  private async deleteCharacter(): Promise<void> {
+    await this.flushPendingUpdate();
+    if (this.file === null || !this.completedEditMode) return;
+    await this.trashCharacter(this.file);
+  }
+
+  private async trashCharacter(file: TFile): Promise<void> {
+    try {
+      await this.app.fileManager.trashFile(file);
+    } catch (error) {
+      this.draftApplyError = `Could not delete character: ${error instanceof Error ? error.message : String(error)}`;
+      await this.render();
+      return;
+    }
+    this.completedEditMode = false;
+    this.savedDocument = undefined;
+    this.file = null;
+    this.document = null;
+    this.viewState = { mode: 'open', section: 'abilities' };
+    await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
   }
 
   private async cancelCharacterDraft(): Promise<void> {
@@ -1245,7 +1290,6 @@ export class CharacterView extends ItemView {
     this.classLevelPreview = undefined;
     this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
     await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
-    await this.loadFromState();
   }
 
   private async applyCharacterDraft(): Promise<void> {
@@ -1293,13 +1337,9 @@ export class CharacterView extends ItemView {
     else { const list = root.createEl('ul'); for (const item of inventory.items) list.createEl('li', { text: `${isFoundryInventoryEntry(item) ? item.source.name : item.custom.name} ×${item.quantity}` }); }
     root.createEl('h4', { text: 'Currency' });
     root.createDiv({ text: Object.entries(inventory.currency).filter(([, amount]) => amount > 0).map(([denomination, amount]) => `${amount} ${denomination.toUpperCase()}`).join(', ') || 'No starting currency.' });
-    root.createEl('h4', { text: 'Finalize character' });
-    root.createDiv({ text: 'Review the selections above, then create the mutable character sheet.', cls: 'guided-character-sheet__hint' });
-    const ready = isReadyForCharacterCreation(this.document!);
-    const create = root.createEl('button', { text: 'Create character', cls: 'mod-cta', attr: { type: 'button' } });
-    create.disabled = !ready;
-    if (!ready) root.createDiv({ text: 'Complete the required character selections before creating the character.', cls: 'guided-character-sheet__warning' });
-    create.addEventListener('click', () => { void this.finalizeCharacter(); });
+    root.createEl('h4', { text: this.completedEditMode ? 'Review changes' : 'Finalize character' });
+    root.createDiv({ text: this.completedEditMode ? 'Review the selections above, then use Apply below to save your changes.' : 'Review the selections above, then use Create below to finish the character sheet.', cls: 'guided-character-sheet__hint' });
+    if (!this.completedEditMode && !isReadyForCharacterCreation(this.document!)) root.createDiv({ text: 'Complete the required character selections before creating the character.', cls: 'guided-character-sheet__warning' });
   }
 
   private async finalizeCharacter(): Promise<void> {
