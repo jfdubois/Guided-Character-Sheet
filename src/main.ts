@@ -57,7 +57,7 @@ export default class GuidedCharacterSheetPlugin extends Plugin implements Settin
   private async openCharacterFile(file: import('obsidian').TFile, mode: 'create' | 'open'): Promise<void> {
     const leaf = this.app.workspace.getRightLeaf(false);
     if (leaf === null) throw new Error('No workspace leaf is available.');
-    await leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: { mode, filePath: file.path }, active: true });
+    await leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: { mode, filePath: file.path, ...(mode === 'create' ? { newSession: true } : {}) }, active: true });
     await this.app.workspace.revealLeaf(leaf);
   }
 

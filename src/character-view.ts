@@ -735,6 +735,7 @@ export class CharacterView extends ItemView {
   private document: CharacterDocument | null = null;
   private savedDocument: CharacterDocument | undefined;
   private completedEditMode = false;
+  private newCharacterSession = false;
   private inactiveClassHitPoints: ClassHitPointEntry[] = [];
   private draftClassHitPoints: ClassHitPointEntry[] = [];
   private draftApplyError: string | undefined;
@@ -767,6 +768,8 @@ export class CharacterView extends ItemView {
 
   async setState(state: unknown, _result: ViewStateResult): Promise<void> {
     const normalized = normalizeCharacterViewState(state);
+    const newSessionRequested = typeof state === 'object' && state !== null && !Array.isArray(state) && (state as Record<string, unknown>).newSession === true;
+    this.newCharacterSession = normalized?.mode === 'create' && (newSessionRequested || (this.viewState?.mode === 'create' && this.viewState.filePath === normalized.filePath && this.newCharacterSession));
     if (normalized !== null) this.viewState = normalized;
     else if (isEmptyViewState(state)) this.viewState = { mode: 'open', section: 'abilities' };
     else throw new Error('Invalid character view state');
@@ -1232,14 +1235,15 @@ export class CharacterView extends ItemView {
     const footer = root.createDiv({ cls: 'guided-character-sheet__journey-actions' });
     if (this.draftApplyError !== undefined) footer.createDiv({ text: this.draftApplyError, cls: 'guided-character-sheet__warning', attr: { role: 'alert' } });
     if (this.completedEditMode) footer.createDiv({ text: this.conflict ? 'This character changed externally. Cancel and reopen it before editing.' : 'Apply validates the selected level, choices, and hit-point gains while preserving your current resources and hit points.', cls: 'guided-character-sheet__hint' });
+    else if (!this.newCharacterSession) footer.createDiv({ text: 'Choices are saved as you go. Close keeps this draft.', cls: 'guided-character-sheet__hint' });
     const buttons = footer.createDiv({ cls: 'guided-character-sheet__journey-buttons' });
-    if (this.completedEditMode) {
+    if (this.completedEditMode || !this.newCharacterSession) {
       const remove = buttons.createEl('button', { text: 'Delete', cls: 'mod-warning', attr: { type: 'button' } });
       remove.addEventListener('click', () => this.confirmDeleteCharacter());
     }
     const right = buttons.createDiv({ cls: 'guided-character-sheet__journey-buttons-right' });
-    const cancel = right.createEl('button', { text: 'Cancel', attr: { type: 'button' } });
-    cancel.addEventListener('click', () => { void (this.completedEditMode ? this.cancelCharacterDraft() : this.cancelNewCharacter()); });
+    const cancel = right.createEl('button', { text: this.completedEditMode || this.newCharacterSession ? 'Cancel' : 'Close', attr: { type: 'button' } });
+    cancel.addEventListener('click', () => { void (this.completedEditMode ? this.cancelCharacterDraft() : this.newCharacterSession ? this.cancelNewCharacter() : this.closeExistingDraft()); });
     const apply = right.createEl('button', { text: this.completedEditMode ? 'Apply' : 'Create', cls: 'mod-cta', attr: { type: 'button' } });
     apply.disabled = this.completedEditMode ? this.conflict || this.document?.classProgressions?.length !== 1 : this.document === null || !isReadyForCharacterCreation(this.document);
     apply.addEventListener('click', () => { void (this.completedEditMode ? this.applyCharacterDraft() : this.finalizeCharacter()); });
@@ -1247,18 +1251,25 @@ export class CharacterView extends ItemView {
 
   private async cancelNewCharacter(): Promise<void> {
     await this.flushPendingUpdate();
-    if (this.file === null || this.completedEditMode) return;
+    if (this.file === null || this.completedEditMode || !this.newCharacterSession) return;
     await this.trashCharacter(this.file);
   }
 
+  private async closeExistingDraft(): Promise<void> {
+    await this.flushPendingUpdate();
+    if (this.file === null || this.completedEditMode || this.newCharacterSession) return;
+    this.viewState = { mode: 'open', filePath: this.file.path, section: 'abilities' };
+    await this.leaf.setViewState({ type: CHARACTER_VIEW_TYPE, state: this.viewState, active: true });
+  }
+
   private confirmDeleteCharacter(): void {
-    if (this.file === null || !this.completedEditMode) return;
+    if (this.file === null || this.newCharacterSession) return;
     new CharacterResetModal(this.app, 'Delete character?', `Move ${this.document?.name ?? 'this character'} to the trash?`, 'Delete character', () => { void this.deleteCharacter(); }).open();
   }
 
   private async deleteCharacter(): Promise<void> {
     await this.flushPendingUpdate();
-    if (this.file === null || !this.completedEditMode) return;
+    if (this.file === null || this.newCharacterSession) return;
     await this.trashCharacter(this.file);
   }
 
