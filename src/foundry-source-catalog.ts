@@ -347,8 +347,12 @@ export function createFoundrySourceCatalog(adapter: FoundrySourceCatalogAdapter,
       const packs = filters.ruleset === '2014' ? ['items'] : ['items', 'equipment24'];
       for (const pack of packs) await indexItemPack(pack, filters.ruleset === '2024' && pack === 'items' ? undefined : filters.ruleset);
       const normalizedQuery = query.trim().toLocaleLowerCase();
-      return [...new Map([...itemSummaries.values()].map((item) => [item.sourcePath, item])).values()]
+      const items = [...new Map([...itemSummaries.values()].map((item) => [item.sourcePath, item])).values()];
+      const currentEquipment = new Set(items.filter((item) => item.ruleset === '2024' && item.pack === 'dnd5e.equipment24').map(itemSearchIdentity));
+      return items
         .filter((item) => filters.ruleset === undefined || item.ruleset === filters.ruleset || filters.ruleset === '2024' && item.ruleset === '2014' && item.pack === 'dnd5e.items')
+        // Keep legacy-only items available without offering superseded equipment twice.
+        .filter((item) => filters.ruleset !== '2024' || item.ruleset !== '2014' || !currentEquipment.has(itemSearchIdentity(item)))
         .filter((item) => filters.itemType === undefined || item.itemType === filters.itemType)
         .filter((item) => filters.rarity === undefined || item.rarity === filters.rarity)
         .filter((item) => filters.magic === undefined || item.magic === filters.magic)
@@ -576,6 +580,12 @@ function toItemSummary(record: FoundrySourceRecord, ruleset: CharacterRuleset): 
     ...(activities.activities.length > 0 ? { activities: activities.activities } : {}), ...(activities.diagnostics.length > 0 || uses.diagnostics.length > 0 ? { activityDiagnostics: [...activities.diagnostics, ...uses.diagnostics] } : {}),
     ...(uses.uses ? { uses: uses.uses } : {}),
   };
+}
+
+function itemSearchIdentity(item: FoundryItemSummary): string {
+  const identifier = item.identifier?.trim().toLocaleLowerCase();
+  const identity = identifier ? ['identifier', identifier] : ['name', item.itemType, item.name.trim().toLocaleLowerCase()];
+  return JSON.stringify([...identity, item.magic, item.magicalBonus ?? 0]);
 }
 
 function isFamilyPath(root: string, path: string, family: SourceFamily, ruleset: CharacterRuleset): boolean {

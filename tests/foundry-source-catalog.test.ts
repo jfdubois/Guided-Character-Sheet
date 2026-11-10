@@ -180,6 +180,39 @@ _id: sword`,
     ]);
   });
 
+  it('prefers current equipment over its legacy counterpart without hiding legacy-only items or magic variants', async () => {
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      'sources/packs/_source/equipment24/weapons/handaxe.yml': `type: weapon\nname: Handaxe\n_id: current-axe\nsystem: { source: { rules: '2024' }, identifier: handaxe, description: { value: '' } }`,
+      'sources/packs/_source/items/weapon/handaxe.yml': `type: weapon\nname: Handaxe\n_id: legacy-axe\nsystem: { source: { rules: '2014' }, identifier: handaxe, description: { value: '<p>A legacy axe.</p>' } }`,
+      'sources/packs/_source/items/weapon/handaxe-1.yml': `type: weapon\nname: Handaxe +1\n_id: magic-axe\nsystem: { source: { rules: '2014' }, identifier: handaxe-1, properties: [mgc], magicalBonus: 1 }`,
+      'sources/packs/_source/items/weapon/legacy-axe.yml': `type: weapon\nname: Legacy Axe\n_id: unique-axe\nsystem: { source: { rules: '2014' } }`,
+    }), 'sources');
+    const legacyPath = 'packs/_source/items/weapon/handaxe.yml';
+    await catalog.getItemSummary('2024', legacyPath);
+
+    const current = await catalog.searchItems('axe', { ruleset: '2024' });
+    expect(current.map((item) => item.id)).toEqual(['current-axe', 'magic-axe', 'unique-axe']);
+    expect(current[0]).toMatchObject({ ruleset: '2024', description: '' });
+    await expect(catalog.searchItems('Handaxe', { ruleset: '2014' })).resolves.toEqual([
+      expect.objectContaining({ id: 'legacy-axe' }), expect.objectContaining({ id: 'magic-axe' }),
+    ]);
+    expect((await catalog.searchItems('Handaxe')).map((item) => item.id)).toContain('legacy-axe');
+    await expect(catalog.getItemSummary('2024', legacyPath)).resolves.toMatchObject({ id: 'legacy-axe' });
+  });
+
+  it('matches source identifiers when an item changes type between rulesets', async () => {
+    const catalog = createFoundrySourceCatalog(memoryAdapter({
+      'sources/packs/_source/equipment24/gear/tinderbox.yml': `type: equipment\nname: Tinderbox\n_id: current-box\nsystem: { source: { rules: '2024' }, identifier: tinderbox }`,
+      'sources/packs/_source/items/gear/tinderbox.yml': `type: loot\nname: Tinderbox\n_id: legacy-box\nsystem: { source: { rules: '2014' }, identifier: tinderbox }`,
+      'sources/packs/_source/items/gear/other-tinderbox.yml': `type: loot\nname: Tinderbox\n_id: different-box\nsystem: { source: { rules: '2014' }, identifier: special-tinderbox }`,
+    }), 'sources');
+
+    expect((await catalog.searchItems('Tinderbox', { ruleset: '2024' })).map((item) => item.id)).toEqual(['different-box', 'current-box']);
+    await expect(catalog.searchItems('Tinderbox', { ruleset: '2024', itemType: 'loot' })).resolves.toEqual([
+      expect.objectContaining({ id: 'different-box' }),
+    ]);
+  });
+
   it('does not duplicate a legacy item after direct 2024 lookup primes the cache', async () => {
     const root = 'sources';
     const sourcePath = 'packs/_source/items/weapon/shortsword-1.yml';
